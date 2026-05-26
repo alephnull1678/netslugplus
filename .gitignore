@@ -12,3 +12,8 @@ release
 *.filters
 *.user
 *.log
+.env
+.env.*
+!.env.example
+relay_secret.txt
+**/relay_secret.txt

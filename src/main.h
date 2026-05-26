@@ -36,5 +36,8 @@
 extern event_t main_event_fat_loaded;
 extern int host_ip;
 extern int port;
+extern int relay_enabled;
+extern int relay_ip;
+extern int relay_port;
 
 #endif /* MAIN_H_ */

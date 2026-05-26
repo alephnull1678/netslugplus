@@ -37,6 +37,7 @@
 #include <sdcard/wiisd_io.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wiiuse/wpad.h>
 
 #include "apploader/apploader.h"
@@ -53,9 +54,25 @@ event_t main_event_fat_loaded;
 static void Main_PrintSize(size_t size);
 static void ConnectHOST(void);
 static void ConnectGUEST(void);
+static void Relay_LoadSecret(void);
+static int Relay_Connect(int is_host);
+static int reliable_send(int socket, const void *data, int size);
+static int reliable_recv(int socket, void *data, int size);
 
 int host_ip = 0xc0a80121;
 int port = 10000;
+int relay_enabled = 0;
+int relay_ip = 0xc0a80121;
+int relay_port = 10000;
+
+#define RELAY_SECRET_MAX 128
+#define RELAY_HELLO_SIZE 8
+#define RELAY_ROLE_HOST 1
+#define RELAY_ROLE_GUEST 2
+
+static char relay_secret[RELAY_SECRET_MAX];
+static int relay_secret_len = 0;
+static const char relay_secret_path[] = APP_PATH "/relay_secret.txt";
 
 int main(void) {
     int ret;
@@ -148,6 +165,7 @@ int main(void) {
     Event_Trigger(&main_event_fat_loaded);
 	
 	settings_load();
+	Relay_LoadSecret();
     
     printf("Waiting for game disk...\n");
     Event_Wait(&apploader_event_disk_id);
@@ -271,49 +289,171 @@ static void Main_PrintSize(size_t size) {
     printf("%.*f %s", precision, sizef, suffix[magnitude]);
 }
 
-static void ConnectHOST(void)
+static void Relay_LoadSecret(void)
 {
-	if(Mynet_init())
-	{
-		goto error;
-	}
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	FILE *file = fopen(relay_secret_path, "rb");
+	int ch;
 
+	relay_secret_len = 0;
+	if (!file)
+	{
+		return;
+	}
+
+	while (relay_secret_len < RELAY_SECRET_MAX && (ch = fgetc(file)) != EOF)
+	{
+		if (ch == '\r' || ch == '\n')
+		{
+			break;
+		}
+		relay_secret[relay_secret_len++] = (char)ch;
+	}
+	fclose(file);
+}
+
+static int reliable_send(int socket, const void *data, int size)
+{
+	for (int i = 0; i < size; )
+	{
+		int amt = Mynet_send(socket, (const char *)data + i, size - i, 0);
+		if (amt <= 0) return amt;
+		i += amt;
+	}
+	return size;
+}
+
+static int reliable_recv(int socket, void *data, int size)
+{
+	for (int i = 0; i < size; )
+	{
+		int amt = Mynet_recv(socket, (char *)data + i, size - i, 0);
+		if (amt <= 0) return amt;
+		i += amt;
+	}
+	return size;
+}
+
+static int Relay_Connect(int is_host)
+{
+	if (relay_secret_len <= 0)
+	{
+		printf("Relay is enabled, but %s is missing or empty.\n", relay_secret_path);
+		return -1;
+	}
+
+	if (Mynet_init())
+	{
+		return -1;
+	}
+
+	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
 	if (sock == -1)
 	{
-		goto error;
+		return -1;
 	}
 
-	struct sockaddr_in myAddress = {};
-	myAddress.sin_family = AF_INET;
-	myAddress.sin_len = 8;
-	myAddress.sin_port = port;
-	myAddress.sin_addr.s_addr = Mynet_gethostip();
+	struct sockaddr_in relayAddress = {};
+	relayAddress.sin_family = AF_INET;
+	relayAddress.sin_len = 8;
+	relayAddress.sin_port = relay_port;
+	relayAddress.sin_addr.s_addr = relay_ip;
 
-	if(Mynet_bind(sock, (struct sockaddr*)&myAddress, myAddress.sin_len))
+	printf("Connecting to relay %d.%d.%d.%d:%d...\n",
+		(int)((relay_ip >> 24) & 0xff), (int)((relay_ip >> 16) & 0xff),
+		(int)((relay_ip >> 8) & 0xff), (int)(relay_ip & 0xff), relay_port);
+
+	if (Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len))
 	{
-		goto error;
+		Mynet_close(sock);
+		return -1;
 	}
 
-	if(Mynet_listen(sock, 1))
-	{
-		goto error;
-	}
-
-	printf("Listening on %d.%d.%d.%d:%d...\n", (int)((myAddress.sin_addr.s_addr >> 24) & 0xff), (int)((myAddress.sin_addr.s_addr >> 16) & 0xff), (int)((myAddress.sin_addr.s_addr >> 8) & 0xff), (int)(myAddress.sin_addr.s_addr & 0xff), port);
-
-	struct sockaddr_in theirAddress = {};
-	int theirAddressLength = 8;
-
-	int communicationSock = Mynet_accept(sock, (struct sockaddr*)&theirAddress, (u32*)&theirAddressLength);
-
-	if (communicationSock == -1)
-	{
-		goto error;
-	}
-	
 	int on = 0;
-	Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+
+	unsigned char hello[RELAY_HELLO_SIZE] = {
+		'N', 'S', 'R', '1',
+		(unsigned char)(is_host ? RELAY_ROLE_HOST : RELAY_ROLE_GUEST),
+		0,
+		(unsigned char)((relay_secret_len >> 8) & 0xff),
+		(unsigned char)(relay_secret_len & 0xff),
+	};
+
+	if (reliable_send(sock, hello, sizeof(hello)) != sizeof(hello) ||
+		reliable_send(sock, relay_secret, relay_secret_len) != relay_secret_len)
+	{
+		Mynet_close(sock);
+		return -1;
+	}
+
+	char response[4];
+	if (reliable_recv(sock, response, sizeof(response)) != sizeof(response) ||
+		memcmp(response, "OKAY", sizeof(response)) != 0)
+	{
+		Mynet_close(sock);
+		return -1;
+	}
+
+	printf("Relay paired. Starting game handshake...\n");
+	return sock;
+}
+
+static void ConnectHOST(void)
+{
+	int communicationSock;
+
+	if (relay_enabled)
+	{
+		communicationSock = Relay_Connect(1);
+		if (communicationSock == -1)
+		{
+			goto error;
+		}
+	}
+	else
+	{
+		if(Mynet_init())
+		{
+			goto error;
+		}
+		int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+
+		if (sock == -1)
+		{
+			goto error;
+		}
+
+		struct sockaddr_in myAddress = {};
+		myAddress.sin_family = AF_INET;
+		myAddress.sin_len = 8;
+		myAddress.sin_port = port;
+		myAddress.sin_addr.s_addr = Mynet_gethostip();
+
+		if(Mynet_bind(sock, (struct sockaddr*)&myAddress, myAddress.sin_len))
+		{
+			goto error;
+		}
+
+		if(Mynet_listen(sock, 1))
+		{
+			goto error;
+		}
+
+		printf("Listening on %d.%d.%d.%d:%d...\n", (int)((myAddress.sin_addr.s_addr >> 24) & 0xff), (int)((myAddress.sin_addr.s_addr >> 16) & 0xff), (int)((myAddress.sin_addr.s_addr >> 8) & 0xff), (int)(myAddress.sin_addr.s_addr & 0xff), port);
+
+		struct sockaddr_in theirAddress = {};
+		int theirAddressLength = 8;
+
+		communicationSock = Mynet_accept(sock, (struct sockaddr*)&theirAddress, (u32*)&theirAddressLength);
+
+		if (communicationSock == -1)
+		{
+			goto error;
+		}
+		
+		int on = 0;
+		Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+	}
 
 	printf("Connected! Sending start request!");
 
@@ -364,32 +504,45 @@ error:
 
 static void ConnectGUEST(void)
 {
-if(Mynet_init())
+	int sock;
+
+	if (relay_enabled)
 	{
-		goto error;
+		sock = Relay_Connect(0);
+		if (sock == -1)
+		{
+			goto error;
+		}
 	}
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-
-	if (sock == -1)
+	else
 	{
-		goto error;
+		if(Mynet_init())
+		{
+			goto error;
+		}
+		sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+
+		if (sock == -1)
+		{
+			goto error;
+		}
+
+		struct sockaddr_in hostAddress = {};
+		hostAddress.sin_family = AF_INET;
+		hostAddress.sin_len = 8;
+		hostAddress.sin_port = port;
+		hostAddress.sin_addr.s_addr = host_ip;
+
+		printf("Connecting to %d.%d.%d.%d:%d...\n", (int)((host_ip >> 24) & 0xff), (int)((host_ip >> 16) & 0xff), (int)((host_ip >> 8) & 0xff), (int)(host_ip & 0xff), port);
+
+		if(Mynet_connect(sock, (struct sockaddr*)&hostAddress, hostAddress.sin_len))
+		{
+			goto error;
+		}
+		
+		int on = 0;
+		Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
 	}
-
-	struct sockaddr_in hostAddress = {};
-	hostAddress.sin_family = AF_INET;
-	hostAddress.sin_len = 8;
-	hostAddress.sin_port = port;
-	hostAddress.sin_addr.s_addr = host_ip;
-
-	printf("Connecting to %d.%d.%d.%d:%d...\n", (int)((host_ip >> 24) & 0xff), (int)((host_ip >> 16) & 0xff), (int)((host_ip >> 8) & 0xff), (int)(host_ip & 0xff), port);
-
-	if(Mynet_connect(sock, (struct sockaddr*)&hostAddress, hostAddress.sin_len))
-	{
-		goto error;
-	}
-	
-	int on = 0;
-	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
 
 
 

@@ -47,7 +47,10 @@ typedef struct settings_fileParseState_t {
  */
 static settings_value_t network_settings[] = {
     { 0, "host_ip", &host_ip, settings_variableType_ip },
-    { 0, "port", &port, settings_variableType_int },
+    { 0, "port", &port, settings_variableType_int, 1, 65535 },
+    { 0, "relay_enabled", &relay_enabled, settings_variableType_bool },
+    { 0, "relay_ip", &relay_ip, settings_variableType_ip },
+    { 0, "relay_port", &relay_port, settings_variableType_int, 1, 65535 },
 };
 
 #define SETTINGS_CATEGORY(x) { #x, x ## _settings, sizeof(x ## _settings) / sizeof(settings_value_t) }
