@@ -39,5 +39,9 @@ extern int port;
 extern int relay_enabled;
 extern int relay_ip;
 extern int relay_port;
+extern volatile int debug_apploader_stage;
+extern volatile int debug_module_stage;
+extern volatile int debug_search_stage;
+extern volatile int debug_search_symbol;
 
 #endif /* MAIN_H_ */

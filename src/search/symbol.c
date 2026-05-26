@@ -191,6 +191,7 @@ bool Symbol_ParseFile(FILE *file) {
 
             if (data == NULL)
                 goto next_symbol;
+            memset(data, 0, data_size);
 
             data_size = 0;
             xml_value = mxmlGetFirstChild(xml_data);
@@ -358,15 +359,18 @@ static symbol_t *Symbol_AllocSymbol(const char *name, size_t name_length) {
         symbol_globals_free = symbol_globals;
     } else if (symbol_globals_end == symbol_globals_free) {
         symbol_t *temp;
+        size_t capacity, used;
 
+        capacity = symbol_globals_end - symbol_globals;
+        used = symbol_globals_free - symbol_globals;
         temp = realloc(
             symbol_globals,
-            (symbol_globals_end - symbol_globals) * 2 * sizeof(symbol_t));
+            capacity * 2 * sizeof(symbol_t));
         
         if (!temp)
             return NULL;
-        symbol_globals_end = temp + (symbol_globals_end - symbol_globals) * 2;
-        symbol_globals_free = temp + (symbol_globals_free - symbol_globals);
+        symbol_globals_end = temp + capacity * 2;
+        symbol_globals_free = temp + used;
         symbol_globals = temp;
 
     }

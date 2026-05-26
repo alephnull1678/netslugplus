@@ -148,6 +148,8 @@ release: $(TARGET) meta.xml icon.png
 	$Qmkdir $(RELEASE)/apps
 	$Qmkdir $(RELEASE)/apps/netslug
 	$Qcp -r $(TARGET) $(RELEASE)/apps/netslug
+	$Qcp meta.xml $(RELEASE)/apps/netslug/meta.xml
+	$Qcp icon.png $(RELEASE)/apps/netslug/icon.png
 	$Qcp -r symbols $(RELEASE)/apps/netslug
 	$Qmkdir $(RELEASE)/apps/netslug/modules
 	$Qcp -r USAGE $(RELEASE)/readme.txt
