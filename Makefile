@@ -118,7 +118,7 @@ MAP    ?= $(BIN)/boot.map
 # Variable init
 
 # The names of libraries to use.
-LIBS     := ogc mxml fat bte wiiuse
+LIBS     := ogc mxml fat bte wiiuse m
 # The source files to compile.
 SRC      :=
 # Phony targets
