@@ -17,3 +17,4 @@ release
 !.env.example
 relay_secret.txt
 **/relay_secret.txt
+old-devkitpro/netslug-wii-original

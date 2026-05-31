@@ -1,0 +1,7 @@
+netslug-wii-original
+**/bin
+**/build
+**/release
+**/*.o
+**/*.d
+**/*.log
