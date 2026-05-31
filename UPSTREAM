@@ -1,0 +1,6 @@
+Repository: https://github.com/MrBean35000vr/netslug-wii
+Snapshot: d51d48d56ebc6d4ba44c0408b8ba0b23bc9340c9
+Commit date: 2015-01-31T14:04:13Z
+
+This root tree is based on the original NetSlug Wii source snapshot, with the
+local relay support changes applied for this experiment branch.

@@ -152,17 +152,16 @@ bool Symbol_ParseFile(FILE *file) {
             xml_symbol, xml_symbol, "data", NULL, NULL, MXML_DESCEND_FIRST);
         if (xml_data != NULL) {
             mxml_node_t *xml_value;
-            const char *xml_text;
             size_t data_size;
             unsigned int i;
 
             data_size = 0;
-            xml_value = mxmlGetFirstChild(xml_data);
+            xml_value = xml_data->child;
             while (xml_value != NULL &&
-                   mxmlGetType(xml_value) == MXML_TEXT &&
-                   (xml_text = mxmlGetText(xml_value, NULL)) != NULL) {
-                for (i = 0; xml_text[i] != '\0'; i++) {
-                    switch (xml_text[i]) {
+                   xml_value->type == MXML_TEXT &&
+                   xml_value->value.text.string != NULL) {
+                for (i = 0; xml_value->value.text.string[i] != '\0'; i++) {
+                    switch (xml_value->value.text.string[i]) {
                         case '0': case '1': case '2': case '3': case '4':
                         case '5': case '6': case '7': case '8': case '9':
                         case 'a': case 'b': case 'c':
@@ -178,7 +177,7 @@ bool Symbol_ParseFile(FILE *file) {
                             goto next_symbol;
                     }
                 }
-                xml_value = mxmlGetNextSibling(xml_value);
+                xml_value = xml_value->next;
             }
 
             /* symbol must be in bytes, so two hex digits per byte! */
@@ -191,20 +190,19 @@ bool Symbol_ParseFile(FILE *file) {
 
             if (data == NULL)
                 goto next_symbol;
-            memset(data, 0, data_size);
 
             data_size = 0;
-            xml_value = mxmlGetFirstChild(xml_data);
+            xml_value = xml_data->child;
             while (xml_value != NULL &&
-                   mxmlGetType(xml_value) == MXML_TEXT &&
-                   (xml_text = mxmlGetText(xml_value, NULL)) != NULL) {
-                for (i = 0; xml_text[i] != '\0'; i++) {
-                    switch (xml_text[i]) {
+                   xml_value->type == MXML_TEXT &&
+                   xml_value->value.text.string != NULL) {
+                for (i = 0; xml_value->value.text.string[i] != '\0'; i++) {
+                    switch (xml_value->value.text.string[i]) {
                         case '0': case '1': case '2': case '3': case '4':
                         case '5': case '6': case '7': case '8': case '9':
                             data[data_size / 2] =
                                 (data[data_size / 2] << 4) +
-                                (xml_text[i] - '0');
+                                (xml_value->value.text.string[i] - '0');
                             mask[data_size / 2] =
                                 (mask[data_size / 2] << 4) + 0xf;
                             data_size++;
@@ -213,7 +211,7 @@ bool Symbol_ParseFile(FILE *file) {
                         case 'd': case 'e': case 'f':
                             data[data_size / 2] =
                                 (data[data_size / 2] << 4) +
-                                (xml_text[i] - 'a' + 10);
+                                (xml_value->value.text.string[i] - 'a' + 10);
                             mask[data_size / 2] =
                                 (mask[data_size / 2] << 4) + 0xf;
                             data_size++;
@@ -222,7 +220,7 @@ bool Symbol_ParseFile(FILE *file) {
                         case 'D': case 'E': case 'F':
                             data[data_size / 2] =
                                 (data[data_size / 2] << 4) +
-                                (xml_text[i] - 'A' + 10);
+                                (xml_value->value.text.string[i] - 'A' + 10);
                             mask[data_size / 2] =
                                 (mask[data_size / 2] << 4) + 0xf;
                             data_size++;
@@ -241,7 +239,7 @@ bool Symbol_ParseFile(FILE *file) {
                             break;
                     }
                 }
-                xml_value = mxmlGetNextSibling(xml_value);
+                xml_value = xml_value->next;
             }
         } else {
             symbol->data = data = NULL;
@@ -359,18 +357,15 @@ static symbol_t *Symbol_AllocSymbol(const char *name, size_t name_length) {
         symbol_globals_free = symbol_globals;
     } else if (symbol_globals_end == symbol_globals_free) {
         symbol_t *temp;
-        size_t capacity, used;
 
-        capacity = symbol_globals_end - symbol_globals;
-        used = symbol_globals_free - symbol_globals;
         temp = realloc(
             symbol_globals,
-            capacity * 2 * sizeof(symbol_t));
+            (symbol_globals_end - symbol_globals) * 2 * sizeof(symbol_t));
         
         if (!temp)
             return NULL;
-        symbol_globals_end = temp + capacity * 2;
-        symbol_globals_free = temp + used;
+        symbol_globals_end = temp + (symbol_globals_end - symbol_globals) * 2;
+        symbol_globals_free = temp + (symbol_globals_free - symbol_globals);
         symbol_globals = temp;
 
     }

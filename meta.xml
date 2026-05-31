@@ -4,7 +4,6 @@
     <coder>Chadderz</coder>
     <version>v0.01</version>
     <release_date>20140329000000</release_date>
-    <ahb_access/>
     <short_description>BrainSlug Patching Engine</short_description>
     <long_description>BrainSlug is a specialised Wii disc loader which is designed to allow the loaded game to be patched. BrainSlug is designed to make the process of adding functionality to Wii games much easier and more enjoyable for all.
 

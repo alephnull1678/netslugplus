@@ -36,7 +36,6 @@
 #include "di/di.h"
 #include "library/dolphin_os.h"
 #include "library/event.h"
-#include "main.h"
 #include "modules/module.h"
 #include "threads.h"
 
@@ -119,12 +118,10 @@ static void *Aploader_Main(void *arg) {
     apploader_final_t fn_final;
     apploader_entry_t fn_entry;
     
-    debug_apploader_stage = 1;
     do {
         ret = DI_Init();
     } while (ret);
     
-    debug_apploader_stage = 2;
     do {
         ret = DI_DiscInserted();
     } while (ret < 0);
@@ -134,14 +131,12 @@ static void *Aploader_Main(void *arg) {
         } while (ret != 4);
     }
     
-    debug_apploader_stage = 3;
     do {
         ret = DI_Reset();
     } while (ret < 0);
     
     Event_Trigger(&apploader_event_disk_id);
     
-    debug_apploader_stage = 4;
     do {
         ret = DI_ReadUnencrypted(ipc_toc, sizeof(ipc_toc), 0x00010000);
     } while (ret < 0);
@@ -194,9 +189,7 @@ static void *Aploader_Main(void *arg) {
     
     settime(secs_to_ticks(time(NULL) - 946684800));
 
-    debug_apploader_stage = 5;
     Event_Wait(&module_event_list_loaded);
-    debug_apploader_stage = 6;
     
     while (1) {
         void* destination = 0;
@@ -286,10 +279,8 @@ static void *Aploader_Main(void *arg) {
 
     DCFlushRange(os0, 0x3f00);
     
-    debug_apploader_stage = 7;
     apploader_game_entry_fn = fn_final();
 
-    debug_apploader_stage = 8;
     Event_Trigger(&apploader_event_complete);
     
     return NULL;

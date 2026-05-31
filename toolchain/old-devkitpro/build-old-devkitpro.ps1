@@ -7,7 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $toolRoot = Resolve-Path $PSScriptRoot
-$repoRoot = Resolve-Path (Join-Path $toolRoot "..")
+$repoRoot = Resolve-Path (Join-Path $toolRoot "..\..")
 $targetPath = Resolve-Path (Join-Path $repoRoot $Target)
 
 docker build -f (Join-Path $toolRoot "Dockerfile") -t $Image $toolRoot

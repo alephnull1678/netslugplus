@@ -103,13 +103,11 @@ bool Search_RunBackground(void) {
 }
 
 static void *Search_Main(void *arg) {
-    debug_search_stage = 1;
     Search_SymbolsLoad();
     
     if (symbol_count > 0) {
         symbol_index_t i;
         
-        debug_search_stage = 2;
         if (!Search_BuildFSM())
            goto exit_error;
         
@@ -123,9 +121,7 @@ static void *Search_Main(void *arg) {
             search_symbol_globals[i].search_fail = false;
         }
         
-        debug_search_stage = 3;
         Event_Wait(&apploader_event_complete);
-        debug_search_stage = 4;
         
         if (apploader_app0_start != NULL) {
             assert(apploader_app0_end != NULL);
@@ -141,11 +137,10 @@ static void *Search_Main(void *arg) {
         search_fsm = NULL;
     }
     
-    debug_search_stage = 5;
     Event_Trigger(&search_event_complete);
     return NULL;
 exit_error:
-    debug_search_stage = 99;
+    printf("Search_Main: exit_error\n");
     search_has_error = true;
     Event_Trigger(&search_event_complete);
     return NULL;
@@ -277,7 +272,6 @@ static bool Search_BuildFSM(void) {
     for (i = 0; i < symbol_count; i++) {
         fsm_t *fsm;
 
-        debug_search_symbol = i;
         fsm = FSM_Create(i);
         if (fsm == NULL)
             goto exit_error;
@@ -306,7 +300,6 @@ static bool Search_BuildFSM(void) {
     
     result = true;
 exit_error:
-    debug_search_symbol = i;
 	if (!result)
 		printf("Search_BuildFSM: exit_error\n");
     if (fsm_final != NULL)

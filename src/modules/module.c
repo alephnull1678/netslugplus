@@ -145,24 +145,19 @@ bool Module_RunBackground(void) {
 static void *Module_Main(void *arg) {
     uint8_t *space;
     
-    debug_module_stage = 1;
     Module_ListLoad();
     
     module_list_size += ((-module_list_size) & 0x1f);
     
-    debug_module_stage = 2;
     Event_Trigger(&module_event_list_loaded);
     
     space = (uint8_t *)0x81800000;
     
-    debug_module_stage = 3;
     if (!Module_ListLink(&space))
         goto exit_error;
     
-    debug_module_stage = 4;
     Event_Wait(&apploader_event_complete);
     Event_Wait(&search_event_complete);
-    debug_module_stage = 5;
     if (search_has_error)
         goto exit_error;
     
@@ -176,12 +171,11 @@ static void *Module_Main(void *arg) {
     
     DCFlushRange(space, 0x81800000 - (uint32_t)space);
 
-    debug_module_stage = 6;
     Event_Trigger(&module_event_complete);
     
     return NULL;
 exit_error:
-    debug_module_stage = 99;
+    printf("Module_Main: exit_error\n");
     module_has_error = true;
     Event_Trigger(&module_event_complete);
     return NULL;

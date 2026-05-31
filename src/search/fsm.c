@@ -62,22 +62,11 @@ struct fsm_t {
 };
 
 typedef struct {
-    unsigned int common_index;
     fsm_node_t *node;
     const fsm_node_t *left;
     const fsm_node_t *right;
-    bool occupied;
     bool processed;
 } fsm_node_index_t;
-
-typedef struct {
-    fsm_node_index_t *entries;
-    unsigned int *pending;
-    unsigned int capacity;
-    unsigned int count;
-    unsigned int pending_capacity;
-    unsigned int pending_count;
-} fsm_node_map_t;
  
 static fsm_node_t *FSM_AllocNode(fsm_t *fsm) {
     fsm_node_t *node;
@@ -93,125 +82,6 @@ static fsm_node_t *FSM_AllocNode(fsm_t *fsm) {
     }
     
     return node;
-}
-
-static unsigned int FSM_HashIndex(unsigned int index) {
-    index ^= index >> 16;
-    index *= 0x7feb352d;
-    index ^= index >> 15;
-    index *= 0x846ca68b;
-    index ^= index >> 16;
-    return index;
-}
-
-static fsm_node_index_t *FSM_MapFindSlot(
-        fsm_node_map_t *map, unsigned int common_index) {
-    unsigned int index;
-
-    assert(map);
-    assert(map->entries);
-    assert(map->capacity > 0);
-
-    index = FSM_HashIndex(common_index) & (map->capacity - 1);
-    while (map->entries[index].occupied &&
-           map->entries[index].common_index != common_index) {
-        index = (index + 1) & (map->capacity - 1);
-    }
-
-    return &map->entries[index];
-}
-
-static bool FSM_MapGrow(fsm_node_map_t *map) {
-    fsm_node_index_t *old_entries, *new_entries;
-    unsigned int old_capacity, new_capacity, i;
-
-    assert(map);
-
-    old_entries = map->entries;
-    old_capacity = map->capacity;
-    new_capacity = old_capacity == 0 ? 1024 : old_capacity * 2;
-
-    new_entries = calloc(new_capacity, sizeof(*new_entries));
-    if (new_entries == NULL)
-        return false;
-
-    map->entries = new_entries;
-    map->capacity = new_capacity;
-    map->count = 0;
-
-    for (i = 0; i < old_capacity; i++) {
-        if (old_entries[i].occupied) {
-            fsm_node_index_t *entry;
-
-            entry = FSM_MapFindSlot(map, old_entries[i].common_index);
-            *entry = old_entries[i];
-            map->count++;
-        }
-    }
-
-    free(old_entries);
-    return true;
-}
-
-static bool FSM_MapPushPending(
-        fsm_node_map_t *map, unsigned int common_index) {
-    unsigned int *pending;
-
-    assert(map);
-
-    if (map->pending_count == map->pending_capacity) {
-        unsigned int new_capacity;
-
-        new_capacity =
-            map->pending_capacity == 0 ? 1024 : map->pending_capacity * 2;
-        pending = realloc(map->pending, new_capacity * sizeof(*pending));
-        if (pending == NULL)
-            return false;
-
-        map->pending = pending;
-        map->pending_capacity = new_capacity;
-    }
-
-    map->pending[map->pending_count++] = common_index;
-    return true;
-}
-
-static fsm_node_index_t *FSM_MapAddNode(
-        fsm_t *fsm, fsm_node_map_t *map, unsigned int common_index,
-        const fsm_node_t *left_node, const fsm_node_t *right_node) {
-    fsm_node_index_t *entry;
-    fsm_node_t *node;
-
-    assert(fsm);
-    assert(map);
-    assert(left_node);
-    assert(right_node);
-
-    if (map->capacity == 0 || (map->count + 1) * 4 >= map->capacity * 3) {
-        if (!FSM_MapGrow(map))
-            return NULL;
-    }
-
-    entry = FSM_MapFindSlot(map, common_index);
-    if (entry->occupied)
-        return entry;
-
-    if (!FSM_MapPushPending(map, common_index))
-        return NULL;
-
-    node = FSM_AllocNode(fsm);
-    if (node == NULL)
-        return NULL;
-
-    entry->common_index = common_index;
-    entry->node = node;
-    entry->left = left_node;
-    entry->right = right_node;
-    entry->occupied = true;
-    entry->processed = false;
-    map->count++;
-
-    return entry;
 }
  
 fsm_t *FSM_Create(symbol_index_t symbol_index) {
@@ -327,19 +197,15 @@ fsm_t *FSM_Create(symbol_index_t symbol_index) {
                     if (search == queue2_free) {
                         if (queue2_free == queue2_end) {
                             fsm_node_build_queue_t *tmp;
-                            size_t capacity, used;
                             
-                            capacity = queue2_end - queue2;
-                            used = queue2_free - queue2;
                             tmp = realloc(
-                                queue2, capacity * 2 *
-                                    sizeof(fsm_node_build_queue_t));
+                                queue2, (queue2_end - queue2) * 2 *
+                                sizeof(fsm_node_build_queue_t));
                             if (tmp == NULL)
                                 goto exit_error;
-                            queue2_end = tmp + capacity * 2;
-                            queue2_free = tmp + used;
+                            queue2_end = tmp + ((queue2_end - queue2) * 2);
+                            queue2_free = tmp + (queue2_free - queue2);
                             queue2 = tmp;
-                            search = queue2_free;
                         }
                         
                         queue2_free++;
@@ -392,19 +258,15 @@ fsm_t *FSM_Create(symbol_index_t symbol_index) {
                     if (search == queue1_free) {
                         if (queue1_free == queue1_end) {
                             fsm_node_build_queue_t *tmp;
-                            size_t capacity, used;
                             
-                            capacity = queue1_end - queue1;
-                            used = queue1_free - queue1;
                             tmp = realloc(
-                                queue1, capacity * 2 *
-                                    sizeof(fsm_node_build_queue_t));
+                                queue1, (queue1_end - queue1) * 2 *
+                                sizeof(fsm_node_build_queue_t));
                             if (tmp == NULL)
                                 goto exit_error;
-                            queue1_end = tmp + capacity * 2;
-                            queue1_free = tmp + used;
+                            queue1_end = tmp + ((queue1_end - queue1) * 2);
+                            queue1_free = tmp + (queue1_free - queue1);
                             queue1 = tmp;
-                            search = queue1_free;
                         }
                         
                         queue1_free++;
@@ -461,7 +323,7 @@ exit_error:
  
 static bool FSM_BuildMergeNodeTransitional(
         fsm_t *fsm, const fsm_t *left, const fsm_t *right,
-        fsm_node_map_t *node_index, fsm_node_t *node,
+        fsm_node_index_t *node_index, fsm_node_t *node,
         const fsm_node_t *left_node, const fsm_node_t *right_node) {
     unsigned int i;
     
@@ -481,23 +343,25 @@ static bool FSM_BuildMergeNodeTransitional(
             left_node->payload.transition[i]->index * right->node_count +
             right_node->payload.transition[i]->index;
         
-        fsm_node_index_t *entry;
-
-        entry = FSM_MapAddNode(
-            fsm, node_index, common_index,
-            left_node->payload.transition[i],
-            right_node->payload.transition[i]);
-        if (entry == NULL)
-            return false;
-
-        node->payload.transition[i] = entry->node;
+        if (node_index[common_index].node == NULL) {
+            assert(!node_index[common_index].processed);
+            node_index[common_index].node = FSM_AllocNode(fsm);
+        
+            if (node_index[common_index].node == NULL)
+                return false;
+                
+            node_index[common_index].left = left_node->payload.transition[i];
+            node_index[common_index].right = right_node->payload.transition[i];
+        }
+        
+        node->payload.transition[i] = node_index[common_index].node;
     }
     
     return true;
 }
 static bool FSM_BuildMergeNodeEpsilon(
         fsm_t *fsm, const fsm_t *left, const fsm_t *right,
-        fsm_node_map_t *node_index, fsm_node_t *node,
+        fsm_node_index_t *node_index, fsm_node_t *node,
         const fsm_node_t *left_node, const fsm_node_t *right_node) {
     assert(fsm);
     assert(node_index);
@@ -512,7 +376,6 @@ static bool FSM_BuildMergeNodeEpsilon(
         
     if (left_node->symbol != SYMBOL_NULL) {
         unsigned int common_index;
-        fsm_node_index_t *entry;
         
         node->symbol = left_node->symbol;
         assert(left_node->payload.next);
@@ -520,16 +383,19 @@ static bool FSM_BuildMergeNodeEpsilon(
         common_index = 
             left_node->payload.next->index * right->node_count +
             right_node->index;
-        entry = FSM_MapAddNode(
-            fsm, node_index, common_index,
-            left_node->payload.next, right_node);
-        if (entry == NULL)
+        if (node_index[common_index].node == NULL) {
+            assert(!node_index[common_index].processed);
+            node_index[common_index].node = FSM_AllocNode(fsm);
+            node_index[common_index].left = left_node->payload.next;
+            node_index[common_index].right = right_node;
+        }
+        
+        if (node_index[common_index].node == NULL)
             return false;
-
-        node->payload.next = entry->node;
+        
+        node->payload.next = node_index[common_index].node;
     } else {
         unsigned int common_index;
-        fsm_node_index_t *entry;
         
         node->symbol = right_node->symbol;
         assert(right_node->payload.next);
@@ -537,20 +403,24 @@ static bool FSM_BuildMergeNodeEpsilon(
         common_index = 
             left_node->index * right->node_count +
             right_node->payload.next->index;
-        entry = FSM_MapAddNode(
-            fsm, node_index, common_index,
-            left_node, right_node->payload.next);
-        if (entry == NULL)
+        if (node_index[common_index].node == NULL) {
+            assert(!node_index[common_index].processed);
+            node_index[common_index].node = FSM_AllocNode(fsm);
+            node_index[common_index].left = left_node;
+            node_index[common_index].right = right_node->payload.next;
+        }
+        
+        if (node_index[common_index].node == NULL)
             return false;
-
-        node->payload.next = entry->node;
+        
+        node->payload.next = node_index[common_index].node;
     }
     
     return true;
 }
 static bool FSM_BuildMergeNode(
         fsm_t *fsm, const fsm_t *left, const fsm_t *right,
-        fsm_node_map_t *node_index, fsm_node_t *node,
+        fsm_node_index_t *node_index, fsm_node_t *node,
         const fsm_node_t *left_node, const fsm_node_t *right_node) {
     
     assert(fsm);
@@ -571,10 +441,9 @@ static bool FSM_BuildMergeNode(
 }
 
 fsm_t *FSM_Merge(const fsm_t *left, const fsm_t *right) {
-    fsm_node_map_t node_index = { NULL, NULL, 0, 0, 0, 0 };
-    fsm_node_index_t *initial_entry;
+    fsm_node_index_t *node_index = NULL;
     fsm_t *fsm = NULL;
-    unsigned int processed_nodes, pending_index, i, common_index;
+    unsigned int processed_nodes, i, common_index;
     
     assert(left != NULL && right != NULL);
     
@@ -585,62 +454,52 @@ fsm_t *FSM_Merge(const fsm_t *left, const fsm_t *right) {
     
     fsm->node_count = 0;
     
+    node_index = 
+        calloc(left->node_count * right->node_count, sizeof(fsm_node_index_t));
+        
+    if (node_index == NULL)
+        goto exit_error;
+    
+    fsm->initial = FSM_AllocNode(fsm);
+    
+    if (fsm->initial == NULL)
+        goto exit_error;
+        
     common_index = 
         left->initial->index * right->node_count +
         right->initial->index;
-
-    initial_entry = FSM_MapAddNode(
-        fsm, &node_index, common_index, left->initial, right->initial);
-    if (initial_entry == NULL)
-        goto exit_error;
-
-    fsm->initial = initial_entry->node;
+        
+    node_index[common_index].node = fsm->initial;
+    node_index[common_index].left = left->initial;
+    node_index[common_index].right = right->initial;
     
     processed_nodes = 0;
-    pending_index = 0;
-    while (pending_index < node_index.pending_count) {
-        fsm_node_index_t *entry;
-        fsm_node_t *node;
-        const fsm_node_t *left_node, *right_node;
-
-        common_index = node_index.pending[pending_index++];
-        entry = FSM_MapFindSlot(&node_index, common_index);
-
-        assert(entry->occupied);
-        if (entry->processed)
-            continue;
-
-        node = entry->node;
-        left_node = entry->left;
-        right_node = entry->right;
-
-        if (!FSM_BuildMergeNode(
-                fsm, left, right, &node_index, node, left_node, right_node))
-            goto exit_error;
-
-        entry = FSM_MapFindSlot(&node_index, common_index);
-        assert(entry->occupied);
-        entry->processed = true;
-        processed_nodes++;
-    }
-
-    assert(processed_nodes == fsm->node_count);
+    do {
+        for (i = 0; i < left->node_count * right->node_count; i++) {
+            if (node_index[i].node != NULL && !node_index[i].processed) {
+                if (!FSM_BuildMergeNode(
+                        fsm, left, right,
+                        node_index, node_index[i].node,
+                        node_index[i].left, node_index[i].right))
+                    return false;
+                node_index[i].processed = true;
+                processed_nodes++;
+            }
+        }   
+    } while (processed_nodes != fsm->node_count);
     
-    free(node_index.pending);
-    free(node_index.entries);
+    free(node_index);
     
     return fsm;
 exit_error:
 
-    free(node_index.pending);
-    if (node_index.entries != NULL) {
-        for (i = 0; i < node_index.capacity; i++) {
-            if (node_index.entries[i].occupied &&
-                node_index.entries[i].node != NULL) {
-                free(node_index.entries[i].node);
+    if (node_index != NULL) {
+        for (i = 0; i < left->node_count * right->node_count; i++) {
+            if (node_index[i].node != NULL) {                
+                free(node_index[i].node);
             }
         }
-        free(node_index.entries);
+        free(node_index);
     }
     if (fsm != NULL)
         free(fsm);
@@ -649,16 +508,10 @@ exit_error:
 }
 
 void FSM_Free(fsm_t *fsm) {
-    fsm_node_t **nodes;
+    fsm_node_t *nodes[fsm->node_count];
     unsigned int i, j, found;
         
     assert(fsm);
-
-    nodes = malloc(sizeof(*nodes) * fsm->node_count);
-    if (nodes == NULL) {
-        free(fsm);
-        return;
-    }
     
     if (fsm->initial != NULL) {
         for (i = 0; i < fsm->node_count; i++)
@@ -716,7 +569,6 @@ void FSM_Free(fsm_t *fsm) {
         }
     }
     
-    free(nodes);
     free(fsm);
 }
 

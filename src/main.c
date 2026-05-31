@@ -38,7 +38,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <wiiuse/wpad.h>
 
 #include "apploader/apploader.h"
@@ -59,17 +58,12 @@ static void Relay_LoadSecret(void);
 static int Relay_Connect(int is_host);
 static int reliable_send(int socket, const void *data, int size);
 static int reliable_recv(int socket, void *data, int size);
-static void Main_WaitForEvent(event_t *event);
 
 int host_ip = 0xc0a80121;
 int port = 10000;
-int relay_enabled = 0;
-int relay_ip = 0xc0a80121;
+int relay_enabled = 1;
+int relay_ip = 0x9bf8df22;
 int relay_port = 10000;
-volatile int debug_apploader_stage = 0;
-volatile int debug_module_stage = 0;
-volatile int debug_search_stage = 0;
-volatile int debug_search_symbol = 0;
 
 #define RELAY_SECRET_MAX 128
 #define RELAY_HELLO_SIZE 8
@@ -171,10 +165,10 @@ int main(void) {
     Event_Trigger(&main_event_fat_loaded);
 	
 	settings_load();
-    Relay_LoadSecret();
+	Relay_LoadSecret();
     
     printf("Waiting for game disk...\n");
-    Main_WaitForEvent(&apploader_event_disk_id);
+    Event_Wait(&apploader_event_disk_id);
 	printf("Game ID: %.4s Version %d\nMake sure all players use the same version!\n", os0->disc.gamename, (int)os0->disc.gamever + 1);
         
     printf("Loading modules...\n");
@@ -204,8 +198,8 @@ int main(void) {
     
 	printf("\nPlease wait while the game is patched.\nIf nothing happens after about 2 minutes, reset the machine!\n");
 
-    Main_WaitForEvent(&apploader_event_complete);
-    Main_WaitForEvent(&module_event_complete);
+    Event_Wait(&apploader_event_complete);
+    Event_Wait(&module_event_complete);
     fatUnmount("sd");
     __io_wiisd.shutdown();
     
@@ -295,32 +289,6 @@ static void Main_PrintSize(size_t size) {
     printf("%.*f %s", precision, sizef, suffix[magnitude]);
 }
 
-static void Main_WaitForEvent(event_t *event) {
-    int last_apploader = -1;
-    int last_module = -1;
-    int last_search = -1;
-    int last_symbol = -1;
-
-    while (!event->triggered) {
-        if (last_apploader != debug_apploader_stage ||
-            last_module != debug_module_stage ||
-            last_search != debug_search_stage ||
-            last_symbol != debug_search_symbol) {
-
-            last_apploader = debug_apploader_stage;
-            last_module = debug_module_stage;
-            last_search = debug_search_stage;
-            last_symbol = debug_search_symbol;
-            printf(
-                "Stages: apploader=%d module=%d search=%d symbol=%d\n",
-                last_apploader, last_module, last_search, last_symbol);
-        }
-        usleep(100000);
-    }
-
-    Event_Wait(event);
-}
-
 static void Relay_LoadSecret(void)
 {
 	FILE *file = fopen(relay_secret_path, "rb");
@@ -345,7 +313,8 @@ static void Relay_LoadSecret(void)
 
 static int reliable_send(int socket, const void *data, int size)
 {
-	for (int i = 0; i < size; )
+	int i;
+	for (i = 0; i < size; )
 	{
 		int amt = Mynet_send(socket, (const char *)data + i, size - i, 0);
 		if (amt <= 0) return amt;
@@ -356,7 +325,8 @@ static int reliable_send(int socket, const void *data, int size)
 
 static int reliable_recv(int socket, void *data, int size)
 {
-	for (int i = 0; i < size; )
+	int i;
+	for (i = 0; i < size; )
 	{
 		int amt = Mynet_recv(socket, (char *)data + i, size - i, 0);
 		if (amt <= 0) return amt;
@@ -482,7 +452,7 @@ static void ConnectHOST(void)
 		{
 			goto error;
 		}
-		
+
 		int on = 0;
 		Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
 	}
