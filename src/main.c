@@ -56,6 +56,9 @@ static void ConnectHOST(void);
 static void ConnectGUEST(void);
 static void Relay_LoadSecret(void);
 static int Relay_Connect(int is_host);
+static int Relay_DebugConnect(int is_host);
+static void Relay_DebugLog(const char *message);
+static void Relay_DebugLogState(const char *event, int is_host, int game_socket);
 static int reliable_send(int socket, const void *data, int size);
 static int reliable_recv(int socket, void *data, int size);
 
@@ -72,6 +75,7 @@ int relay_port = 10000;
 
 static char relay_secret[RELAY_SECRET_MAX];
 static int relay_secret_len = 0;
+static int relay_debug_socket = -1;
 static const char relay_secret_path[] = APP_PATH "/relay_secret.txt";
 
 int main(void) {
@@ -237,7 +241,8 @@ int main(void) {
 				break;
 			}
 		}
-        
+
+		Relay_DebugLog("loader about to call game entry");
         SYS_ResetSystem(SYS_SHUTDOWN, 0, 0);
         apploader_game_entry_fn();
     }
@@ -400,6 +405,77 @@ static int Relay_Connect(int is_host)
 	return sock;
 }
 
+static int Relay_DebugConnect(int is_host)
+{
+	if (relay_secret_len <= 0)
+	{
+		return -1;
+	}
+
+	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	if (sock == -1)
+	{
+		return -1;
+	}
+
+	struct sockaddr_in relayAddress = {};
+	relayAddress.sin_family = AF_INET;
+	relayAddress.sin_len = 8;
+	relayAddress.sin_port = relay_port;
+	relayAddress.sin_addr.s_addr = relay_ip;
+
+	if (Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len))
+	{
+		Mynet_close(sock);
+		return -1;
+	}
+
+	int on = 0;
+	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+
+	unsigned char hello[RELAY_HELLO_SIZE] = {
+		'N', 'S', 'D', '1',
+		(unsigned char)(is_host ? RELAY_ROLE_HOST : RELAY_ROLE_GUEST),
+		0,
+		(unsigned char)((relay_secret_len >> 8) & 0xff),
+		(unsigned char)(relay_secret_len & 0xff),
+	};
+
+	if (reliable_send(sock, hello, sizeof(hello)) != sizeof(hello) ||
+		reliable_send(sock, relay_secret, relay_secret_len) != relay_secret_len)
+	{
+		Mynet_close(sock);
+		return -1;
+	}
+
+	return sock;
+}
+
+static void Relay_DebugLog(const char *message)
+{
+	if (relay_debug_socket < 0)
+	{
+		return;
+	}
+
+	Mynet_send(relay_debug_socket, message, strlen(message), 0);
+	Mynet_send(relay_debug_socket, "\n", 1, 0);
+}
+
+static void Relay_DebugLogState(const char *event, int is_host, int game_socket)
+{
+	char buffer[160];
+	sprintf(
+		buffer,
+		"loader %s role=%s game_sock=%d debug_sock=%d net_fd=%d",
+		event,
+		is_host ? "host" : "guest",
+		game_socket,
+		relay_debug_socket,
+		net_ip_top_fd);
+	Relay_DebugLog(buffer);
+}
+
 static void ConnectHOST(void)
 {
 	int communicationSock;
@@ -411,6 +487,8 @@ static void ConnectHOST(void)
 		{
 			goto error;
 		}
+		relay_debug_socket = Relay_DebugConnect(1);
+		Relay_DebugLogState("relay paired", 1, communicationSock);
 	}
 	else
 	{
@@ -486,6 +564,9 @@ static void ConnectHOST(void)
 		*net_ip_top_fd_pointer = net_ip_top_fd;
 		int* host_pointer = (int*)Search_SymbolLookup("host");
 		*host_pointer = 1;
+		int* relay_debug_sock_pointer = (int*)Search_SymbolLookup("relayDebugSock");
+		*relay_debug_sock_pointer = relay_debug_socket;
+		Relay_DebugLogState("exported module symbols", 1, communicationSock);
 		return;
 	}
 	else
@@ -515,6 +596,8 @@ static void ConnectGUEST(void)
 		{
 			goto error;
 		}
+		relay_debug_socket = Relay_DebugConnect(0);
+		Relay_DebugLogState("relay paired", 0, sock);
 	}
 	else
 	{
@@ -579,6 +662,9 @@ static void ConnectGUEST(void)
 		*net_ip_top_fd_pointer = net_ip_top_fd;
 		int* host_pointer = (int*)Search_SymbolLookup("host");
 		*host_pointer = 0;
+		int* relay_debug_sock_pointer = (int*)Search_SymbolLookup("relayDebugSock");
+		*relay_debug_sock_pointer = relay_debug_socket;
+		Relay_DebugLogState("exported module symbols", 0, sock);
 		return;
 	}
 	else

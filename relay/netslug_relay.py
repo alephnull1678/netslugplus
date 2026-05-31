@@ -11,7 +11,8 @@ import time
 from dataclasses import dataclass
 
 
-MAGIC = b"NSR1"
+MAGIC_RELAY = b"NSR1"
+MAGIC_DEBUG = b"NSD1"
 HEADER_SIZE = 8
 ROLE_HOST = 1
 ROLE_GUEST = 2
@@ -34,10 +35,19 @@ class PipeStats:
     eof: bool = False
 
 
+@dataclass
+class Hello:
+    magic: bytes
+    role: int
+    peer: str
+    secret_len: int
+
+
 waiting_hosts: list[Client] = []
 waiting_guests: list[Client] = []
 match_lock = asyncio.Lock()
 session_ids = itertools.count(1)
+debug_ids = itertools.count(1)
 logger = logging.getLogger("netslug-relay")
 
 
@@ -93,11 +103,12 @@ async def read_hello(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
     expected_secret: bytes,
-) -> int | None:
+) -> Hello | None:
     peer = peer_name(writer)
     try:
         header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), timeout=15)
-        if header[:4] != MAGIC:
+        magic = header[:4]
+        if magic not in (MAGIC_RELAY, MAGIC_DEBUG):
             logger.warning("rejected %s: bad magic %r", peer, header[:4])
             return None
 
@@ -120,12 +131,13 @@ async def read_hello(
             return None
 
         logger.info(
-            "accepted hello peer=%s role=%s secret_len=%d",
+            "accepted hello peer=%s protocol=%s role=%s secret_len=%d",
             peer,
+            magic.decode("ascii", errors="replace"),
             role_name(role),
             secret_len,
         )
-        return role
+        return Hello(magic, role, peer, secret_len)
     except asyncio.TimeoutError:
         logger.warning("rejected %s: timed out during hello", peer)
         return None
@@ -311,6 +323,63 @@ async def close_if_startup_stalled(
         guest_writer.close()
 
 
+async def handle_debug_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    hello: Hello,
+    idle_warn_after: float,
+) -> None:
+    debug_id = next(debug_ids)
+    writer.write(b"OKAY")
+    await writer.drain()
+    logger.info(
+        "debug %d connected peer=%s role=%s",
+        debug_id,
+        hello.peer,
+        role_name(hello.role),
+    )
+
+    lines = 0
+    started = time.monotonic()
+    try:
+        while True:
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=idle_warn_after)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "debug %d idle for more than %.1fs after %d lines",
+                    debug_id,
+                    idle_warn_after,
+                    lines,
+                )
+                continue
+
+            if not line:
+                break
+
+            lines += 1
+            text = line.decode("utf-8", errors="replace").rstrip("\r\n")
+            logger.info(
+                "debug %d %s %s: %s",
+                debug_id,
+                role_name(hello.role),
+                hello.peer,
+                text,
+            )
+    except ConnectionError as exc:
+        logger.warning("debug %d connection error after %d lines: %s", debug_id, lines, exc)
+    finally:
+        await close_writer(writer)
+        logger.info(
+            "debug %d closed peer=%s role=%s lines=%d over %.1fs",
+            debug_id,
+            hello.peer,
+            role_name(hello.role),
+            lines,
+            time.monotonic() - started,
+        )
+
+
 async def bridge(
     a: Client,
     b: Client,
@@ -399,25 +468,29 @@ async def handle_client(
     startup_min_bytes: int,
 ) -> None:
     peer = peer_name(writer)
-    role = await read_hello(reader, writer, expected_secret)
-    if role is None:
+    hello = await read_hello(reader, writer, expected_secret)
+    if hello is None:
         await close_writer(writer)
         return
 
+    if hello.magic == MAGIC_DEBUG:
+        await handle_debug_client(reader, writer, hello, idle_warn_after)
+        return
+
     loop = asyncio.get_running_loop()
-    client = Client(reader, writer, role, peer, loop.create_future())
-    role_name = "host" if role == ROLE_HOST else "guest"
-    logger.info("accepted %s %s", role_name, peer)
+    client = Client(reader, writer, hello.role, peer, loop.create_future())
+    role_label = role_name(hello.role)
+    logger.info("accepted %s %s", role_label, peer)
 
     peer_client = await wait_for_peer(client, match_timeout)
     if peer_client is None:
         writer.write(b"FAIL")
         await writer.drain()
         await close_writer(writer)
-        logger.warning("timed out waiting for peer: %s %s", role_name, peer)
+        logger.warning("timed out waiting for peer: %s %s", role_label, peer)
         return
 
-    if role == ROLE_HOST:
+    if hello.role == ROLE_HOST:
         await bridge(
             client,
             peer_client,

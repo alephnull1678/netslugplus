@@ -65,9 +65,11 @@ BSLUG_MODULE_LICENSE("BSD");
 
 int host = -1;
 int communicationSock = -1;
+int relayDebugSock = -1;
 
 BSLUG_EXPORT(host);
 BSLUG_EXPORT(communicationSock);
+BSLUG_EXPORT(relayDebugSock);
 
 static bool MyOSCreateThread(
     OSThread_t *thread, OSThreadEntry_t entry_point, void *argument,
@@ -86,6 +88,7 @@ static WPADConnectCallback_t MyWPADSetConnectCallback(int wiimote, WPADConnectCa
 static WPADExtensionCallback_t MyWPADSetExtensionCallback(int wiimote, WPADExtensionCallback_t newCallback);
 static WPADSamplingCallback_t MyWPADSetSamplingCallback(int wiimote, WPADSamplingCallback_t newCallback);
 static void Console_Write(const char *s) { }
+static void Debug_Log(const char *s);
 static void My__VIRetraceHandler(int isr, void *context);
 static int MyWPADSetDataFormat(int wiimote, WPADDataFormat_t format);
 static WPADDataFormat_t MyWPADGetDataFormat(int wiimote);
@@ -689,11 +692,23 @@ static void WaitForNextFrame(void)
 	OSSleepThread(&framewaitqueue);
 }
 
+static void Debug_Log(const char *s)
+{
+	if (relayDebugSock < 0)
+	{
+		return;
+	}
+
+	Mynet_send(relayDebugSock, s, strlen(s), 0);
+	Mynet_send(relayDebugSock, "\n", 1, 0);
+}
+
 static bool MyOSCreateThread(
     OSThread_t *thread, OSThreadEntry_t entry_point, void *argument,
     void *stack_base, size_t stack_size, int priority, bool detached)
 {
 
+	Debug_Log("module MyOSCreateThread hit");
 	if (!createdThread)
 	{
 		for (int i = 0; i < 4; i++)
@@ -720,6 +735,7 @@ static bool MyOSCreateThread(
 		}
 		canaried = true;
 		createdThread = true;
+		Debug_Log("module net threads created");
 	}
 
 	return OSCreateThread(thread, entry_point, argument, stack_base, stack_size, priority, detached);
@@ -747,11 +763,13 @@ static void* sendThread_main(void *arg)
 {
 
 	Console_Write("[SEND] Thread started.\n");
+	Debug_Log(host ? "module sendThread started role=host" : "module sendThread started role=guest");
 
 	int sendBufferPos = 0;
 	int ctrlBufferPos = 0;
 	int nextFrameToSend = 0;
 	long long frameSeed = 0;
+	bool loggedFirstSend = false;
 	
 	// Mark the first BUFFER_SIZE frames as ready (since they're, by definition, unused).
 	for (int i = 0; i < BUFFER_SIZE; i++)
@@ -816,6 +834,11 @@ static void* sendThread_main(void *arg)
 
 			_CPU_ISR_Restore(isr);
 
+			if (!loggedFirstSend)
+			{
+				Debug_Log("module host first ctrlPacket send");
+				loggedFirstSend = true;
+			}
 			while(reliable_send(communicationSock, &ctrlBuffer[ctrlBufferPos], sizeof(ctrlBuffer[ctrlBufferPos])) <= 0)
 			{
 				Console_Write("[SEND] Failure. OHHHHHH.\n");
@@ -846,6 +869,11 @@ static void* sendThread_main(void *arg)
 				_CPU_ISR_Restore(isr);
 			}
 
+			if (!loggedFirstSend)
+			{
+				Debug_Log("module guest first sendPacket send");
+				loggedFirstSend = true;
+			}
 			while(reliable_send(communicationSock, &sendBuffer[sendBufferPos], sizeof(sendBuffer[sendBufferPos])) <= 0)
 			{
 				Console_Write("[SEND] Failure. OHHHHHH.\n");
@@ -869,15 +897,22 @@ static void* sendThread_main(void *arg)
 static void* recvThread_main(void *arg)
 {
 	Console_Write("[RECV] Thread started.\n");
+	Debug_Log(host ? "module recvThread started role=host" : "module recvThread started role=guest");
 
 	int ctrlBufferPos = 0;
+	bool loggedFirstRecv = false;
 
 	while (true)
 	{
 		if (host)
 		{
 			struct sendPacket inPacket;
-			
+
+			if (!loggedFirstRecv)
+			{
+				Debug_Log("module host waiting first sendPacket recv");
+				loggedFirstRecv = true;
+			}
 			while(reliable_recv(communicationSock, &inPacket, sizeof(inPacket)) <= 0)
 			{
 				Console_Write("[RECV] Failure. OHHHHHH.\n");
@@ -889,7 +924,12 @@ static void* recvThread_main(void *arg)
 		else
 		{
 			struct ctrlPacket inPacket;
-			
+
+			if (!loggedFirstRecv)
+			{
+				Debug_Log("module guest waiting first ctrlPacket recv");
+				loggedFirstRecv = true;
+			}
 			while(reliable_recv(communicationSock, &inPacket, sizeof(inPacket)) <= 0)
 			{
 				Console_Write("[RECV] Failure. OHHHHHH.\n");
@@ -938,6 +978,7 @@ static void* recvThread_main(void *arg)
 static void* controllerThread_main(void* arg)
 {
 	Console_Write("[CTRL] Thread started.\n");
+	Debug_Log(host ? "module controllerThread started role=host" : "module controllerThread started role=guest");
 	// The host skips the first BUFFER_SIZE inputs.
 	unsigned int nextFrameToSend = BUFFER_SIZE;
 

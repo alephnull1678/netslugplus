@@ -41,3 +41,20 @@ relay_port = 10000
 ```
 
 The host still presses A and the guest still presses B.
+
+Useful log lines:
+
+```text
+accepted host 198.51.100.10:43001
+accepted guest 203.0.113.20:50244
+session 1 paired host=198.51.100.10:43001 guest=203.0.113.20:50244
+debug 1 connected peer=198.51.100.10:43002 role=host
+debug 1 host 198.51.100.10:43002: loader exported module symbols role=host game_sock=3 debug_sock=4 net_fd=7
+debug 1 host 198.51.100.10:43002: module sendThread started role=host
+session 1 host->guest chunk=1 len=4 total=4 first_bytes=01 00 00 00
+session 1 guest->host chunk=1 len=4 total=4 first_bytes=01 00 00 00
+session 1 startup stalled for 30.0s: host->guest=4 bytes/1 chunks guest->host=4 bytes/1 chunks; closing both peers
+session 1 closed host=198.51.100.10:43001 guest=203.0.113.20:50244 totals host->guest=4/1 guest->host=4/1
+```
+
+If you're debugging use NSD1 instead of NSR1
