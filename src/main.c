@@ -453,13 +453,26 @@ static int Relay_DebugConnect(int is_host)
 
 static void Relay_DebugLog(const char *message)
 {
+	char buffer[192];
+	int len;
+
 	if (relay_debug_socket < 0)
 	{
 		return;
 	}
 
-	Mynet_send(relay_debug_socket, message, strlen(message), 0);
-	Mynet_send(relay_debug_socket, "\n", 1, 0);
+	len = snprintf(buffer, sizeof(buffer), "%s\n", message);
+	if (len < 0)
+	{
+		return;
+	}
+	if (len >= (int)sizeof(buffer))
+	{
+		len = sizeof(buffer) - 1;
+		buffer[len - 1] = '\n';
+	}
+
+	Mynet_send(relay_debug_socket, buffer, len, 0);
 }
 
 static void Relay_DebugLogState(const char *event, int is_host, int game_socket)

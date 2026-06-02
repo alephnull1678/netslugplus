@@ -700,7 +700,12 @@ static void Debug_Log(const char *s)
 	}
 
 	Mynet_send(relayDebugSock, s, strlen(s), 0);
-	Mynet_send(relayDebugSock, "\n", 1, 0);
+}
+
+static void Debug_LogLine(const char *s)
+{
+	Debug_Log(s);
+	Debug_Log("\n");
 }
 
 static bool MyOSCreateThread(
@@ -781,9 +786,23 @@ static void* sendThread_main(void *arg)
 	{
 		if (host)
 		{
+			bool probingFirstHostSend = !loggedFirstSend;
+
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host before frame wait");
+			}
 			while (ctrlBuffer[ctrlBufferPos].frameNumber != nextFrameToSend)
 			{
+				if (probingFirstHostSend)
+				{
+					Debug_LogLine("module host inside frame wait");
+				}
 				WaitForNextFrame();
+			}
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host after frame wait");
 			}
 
 			// Wait for all controllers to be available
@@ -794,6 +813,10 @@ static void* sendThread_main(void *arg)
 					WaitForNextFrame();
 				}
 			}
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host before isr disable");
+			}
 			int isr;
 			_CPU_ISR_Disable(isr);
 			// Disconnect ALL controllers until frame BUFFER_SIZE.
@@ -803,16 +826,69 @@ static void* sendThread_main(void *arg)
 				ctrlBuffer[ctrlBufferPos].status[i] = WPAD_STATUS_DISCONNECTED;
 				ctrlBuffer[ctrlBufferPos].haveInput[i] = true;
 			}
-			frameSeed = frameSeed * 1103515245 + 12345;
-			ctrlBuffer[ctrlBufferPos].frameSeed = frameSeed;
-
-			if (memcmp((char *)0x80000000, "SMN", 3) == 0) 
+			_CPU_ISR_Restore(isr);
+			if (probingFirstHostSend)
 			{
-				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6c9 = SMNDance_GetUnkown_a6c9();
-				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6ca = SMNDance_GetMask();
-				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6cb = SMNDance_GetUnkown_a6cb();
+				Debug_LogLine("module host after controller defaults");
 			}
 
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host before frame seed");
+			}
+			_CPU_ISR_Disable(isr);
+			frameSeed = frameSeed * 1103515245 + 12345;
+			ctrlBuffer[ctrlBufferPos].frameSeed = frameSeed;
+			_CPU_ISR_Restore(isr);
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host after frame seed");
+			}
+
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host before smn block");
+			}
+			if (memcmp((char *)0x80000000, "SMN", 3) == 0) 
+			{
+				if (probingFirstHostSend)
+				{
+					Debug_LogLine("module host smn matched before a6c9");
+				}
+				_CPU_ISR_Disable(isr);
+				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6c9 = SMNDance_GetUnkown_a6c9();
+				_CPU_ISR_Restore(isr);
+				if (probingFirstHostSend)
+				{
+					Debug_LogLine("module host after smn a6c9");
+				}
+
+				_CPU_ISR_Disable(isr);
+				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6ca = SMNDance_GetMask();
+				_CPU_ISR_Restore(isr);
+				if (probingFirstHostSend)
+				{
+					Debug_LogLine("module host after smn a6ca");
+				}
+
+				_CPU_ISR_Disable(isr);
+				ctrlBuffer[ctrlBufferPos].game.SMN.dance_a6cb = SMNDance_GetUnkown_a6cb();
+				_CPU_ISR_Restore(isr);
+				if (probingFirstHostSend)
+				{
+					Debug_LogLine("module host after smn a6cb");
+				}
+			}
+			else if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host after smn skipped");
+			}
+
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host before ioctl scan");
+			}
+			_CPU_ISR_Disable(isr);
 			ctrlBuffer[ctrlBufferPos].callback_sector = 0;
 			for (int i = 0; i < IOCTL_BUFFER_SIZE; i++)
 			{
@@ -831,18 +907,23 @@ static void* sendThread_main(void *arg)
 					}
 				}
 			}
-
 			_CPU_ISR_Restore(isr);
 
-			if (!loggedFirstSend)
+			if (probingFirstHostSend)
 			{
-				Debug_Log("module host first ctrlPacket send");
-				loggedFirstSend = true;
+				Debug_LogLine("module host after ioctl scan");
+				Debug_LogLine("module host before reliable_send ctrlPacket");
 			}
-			while(reliable_send(communicationSock, &ctrlBuffer[ctrlBufferPos], sizeof(ctrlBuffer[ctrlBufferPos])) <= 0)
+			int sendResult;
+			while((sendResult = reliable_send(communicationSock, &ctrlBuffer[ctrlBufferPos], sizeof(ctrlBuffer[ctrlBufferPos]))) <= 0)
 			{
 				Console_Write("[SEND] Failure. OHHHHHH.\n");
 				network_error = 1;
+			}
+			if (probingFirstHostSend)
+			{
+				Debug_LogLine("module host after reliable_send ctrlPacket");
+				loggedFirstSend = true;
 			}
 
 			ctrlBuffer[ctrlBufferPos].haveSentOrRecv = true;
