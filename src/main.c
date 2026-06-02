@@ -34,6 +34,7 @@
 #include <ogc/lwp.h>
 #include <ogc/system.h>
 #include <ogc/video.h>
+#include <gccore.h>
 #include <sdcard/wiisd_io.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +63,8 @@ static void Relay_DebugLogState(const char *event, int is_host, int game_socket)
 static int reliable_send(int socket, const void *data, int size);
 static int reliable_recv(int socket, void *data, int size);
 
+static short current_running_ios = 0;
+
 int host_ip = 0xc0a80121;
 int port = 10000;
 int relay_enabled = 1;
@@ -86,12 +89,12 @@ int main(void) {
     /* The game's boot loader is statically loaded at 0x81200000, so we'd better
      * not start mallocing there! */
     SYS_SetArena1Hi((void *)0x81200000);
-	/* initialise Wii Remotes?! */
-	WPAD_Init();
 	settings_init();
 	
     /* initialise all subsystems */
     if (!Event_Init(&main_event_fat_loaded))
+        goto exit_error;
+    if (!IOSApploader_Init())
         goto exit_error;
     if (!Apploader_Init())
         goto exit_error;
@@ -99,6 +102,8 @@ int main(void) {
         goto exit_error;
     if (!Search_Init())
         goto exit_error;
+
+    current_running_ios = *(short *)0x80003140;
     
     /* main thread is UI, so set thread prior to UI */
     LWP_SetThreadPriority(LWP_GetSelf(), THREAD_PRIO_UI);
@@ -115,14 +120,6 @@ int main(void) {
         frame_buffer, 20, 20, rmode->fbWidth, rmode->xfbHeight,
         rmode->fbWidth * VI_DISPLAY_PIX_SZ);
 
-    /* spawn lots of worker threads to do stuff */
-    if (!Apploader_RunBackground())
-        goto exit_error;
-    if (!Module_RunBackground())
-        goto exit_error;
-    if (!Search_RunBackground())
-        goto exit_error;
-        
     VIDEO_Configure(rmode);
     VIDEO_SetNextFramebuffer(frame_buffer);
     VIDEO_SetBlack(false);
@@ -152,7 +149,44 @@ int main(void) {
 		"All settings, including host IP and port, should be set manually in the\n" APP_PATH "/config.ini file.\n"
 		"Currently, only two players are supported.\n\n");
 
-   
+    if (!IOSApploader_RunBackground())
+        goto exit_error;
+
+    printf("Waiting for game disk...\n");
+    Event_Wait(&apploader_event_got_disc_id);
+    Event_Wait(&apploader_event_got_ios);
+	printf("Game ID: %.4s Version %d\nMake sure all players use the same version!\n", os0->disc.gamename, (int)os0->disc.gamever + 1);
+    printf("Game wants IOS%d. Reloading... ", _apploader_game_ios);
+
+    int ios_reload_result = IOS_ReloadIOS(_apploader_game_ios);
+    if (ios_reload_result < 0)
+    {
+        printf(
+            "\nIOS%d reload failed (%d). Continuing under IOS%d.\n",
+            _apploader_game_ios,
+            ios_reload_result,
+            current_running_ios);
+        if (!Apploader_RunBackground(1))
+            goto exit_error;
+    }
+    else
+    {
+        printf("waiting... ");
+        while (*(short *)0x80003140 != _apploader_game_ios)
+        {
+        }
+        printf("done.\n");
+        if (!Apploader_RunBackground(0))
+            goto exit_error;
+    }
+
+    if (!Module_RunBackground())
+        goto exit_error;
+    if (!Search_RunBackground())
+        goto exit_error;
+
+	WPAD_Init();
+
     if (!__io_wiisd.startup() || !__io_wiisd.isInserted()) {
         printf("Please insert an SD card.\n\n");
         do {
@@ -170,10 +204,6 @@ int main(void) {
 	
 	settings_load();
 	Relay_LoadSecret();
-    
-    printf("Waiting for game disk...\n");
-    Event_Wait(&apploader_event_disk_id);
-	printf("Game ID: %.4s Version %d\nMake sure all players use the same version!\n", os0->disc.gamename, (int)os0->disc.gamever + 1);
         
     printf("Loading modules...\n");
     Event_Wait(&module_event_list_loaded);

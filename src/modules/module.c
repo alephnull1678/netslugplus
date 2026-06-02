@@ -100,7 +100,7 @@ static module_metadata_t *Module_MetadataRead(
 static bool Module_ElfLoadSection(
     const Elf *elf, Elf_Scn *scn, const Elf32_Shdr *shdr, void *destination);
 static void Module_ElfLoadSymbols(
-    size_t shndx, const const void *destination, 
+    size_t shndx, const void *destination, 
     Elf32_Sym *symtab, size_t symtab_count);
 static bool Module_ElfLink(
     size_t index, Elf *elf, size_t shndx, void *destination,
@@ -118,7 +118,7 @@ static bool Module_ListLoadSymbols(uint8_t **space);
 
 static bool Module_ListLinkFinal(uint8_t **space);
 static bool Module_ListLinkFinalReplaceFunction(
-        uint8_t **space, bslug_loader_entry_t *entry, const char *module_name);
+        uint8_t **space, bslug_loader_entry_t *entry);
         
 bool Module_Init(void) {
     return
@@ -821,7 +821,7 @@ static bool Module_ElfLoadSection(
 }
 
 static void Module_ElfLoadSymbols(
-        size_t shndx, const const void *destination,
+        size_t shndx, const void *destination,
         Elf32_Sym *symtab, size_t symtab_count) {
     
     size_t i;
@@ -1392,8 +1392,7 @@ static bool Module_ListLinkFinal(uint8_t **space) {
                 break;
             } case BSLUG_LOADER_ENTRY_FUNCTION:
             case BSLUG_LOADER_ENTRY_FUNCTION_MANDATORY: {
-                if (!Module_ListLinkFinalReplaceFunction(
-                        space, entry, module_list[module_index]->name))
+                if (!Module_ListLinkFinalReplaceFunction(space, entry))
                     goto exit_error;
                 break;
             } default:
@@ -1446,25 +1445,17 @@ exit_error:
 }
 
 static bool Module_ListLinkFinalReplaceFunction(
-        uint8_t **space, bslug_loader_entry_t *entry, const char *module_name) {
+        uint8_t **space, bslug_loader_entry_t *entry) {
     bool result = false;
     uint32_t *data;
     
     assert(entry->type == BSLUG_LOADER_ENTRY_FUNCTION ||
            entry->type == BSLUG_LOADER_ENTRY_FUNCTION_MANDATORY);
     assert(entry->data.function.name != NULL);
-    printf(
-        "Replace '%s' needed by '%s'...\n",
-        entry->data.function.name,
-        module_name);
     data = Search_SymbolLookup(entry->data.function.name);
     
     if (data == NULL) {
         if (entry->type == BSLUG_LOADER_ENTRY_FUNCTION) {
-            printf(
-                "Replace '%s' skipped for '%s': missing optional symbol\n",
-                entry->data.function.name,
-                module_name);
             *space -= 4;
             /* FIXME: this behaviour is bad; we should call abort or
              * some such.
@@ -1478,10 +1469,7 @@ static bool Module_ListLinkFinalReplaceFunction(
             Search_SymbolAdd(entry->data.function.name, *space);
             goto exit_success;
         } else {
-            printf(
-                "Replace '%s' failed for '%s': missing mandatory symbol\n",
-                entry->data.function.name,
-                module_name);
+            printf("Missing symbol '%s'\n", entry->data.function.name);
             goto exit_error;
         }
     }
@@ -1554,18 +1542,8 @@ static bool Module_ListLinkFinalReplaceFunction(
     DCFlushRange((void *)((uint32_t)data & ~31), 32);
     ICInvalidateRange((void *)((uint32_t)data & ~31), 32);
     
-    if (!Search_SymbolReplace(entry->data.function.name, *space)) {
-        printf(
-            "Replace '%s' failed for '%s': symbol replace failed\n",
-            entry->data.function.name,
-            module_name);
+    if (!Search_SymbolReplace(entry->data.function.name, *space))
         goto exit_error;
-    }
-
-    printf(
-        "Replace '%s' applied for '%s'\n",
-        entry->data.function.name,
-        module_name);
 
 exit_success:
     result = true;

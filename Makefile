@@ -24,15 +24,23 @@ ifeq ($(OS),Windows_NT)
   PORTLIBS := $(DEVKITPRO)/portlibs/ppc
   PATH := $(DEVKITPPC)/bin:$(PORTLIBS)/bin:$(PATH)
   ifeq ($(DEVKITPRO),$(subst :, ,$(DEVKITPRO)))
-    DEVKITPRO := $(patsubst /$(firstword $(subst /, ,$(DEVKITPRO)))/%,$(firstword $(subst /, ,$(DEVKITPRO))):/%,$(DEVKITPRO))
-    $(info DEVKITPRO corrected to $(DEVKITPRO))
+    ifneq ($(filter /opt/% /usr/% /home/% /tmp/%,$(DEVKITPRO)),)
+      $(info DEVKITPRO is $(DEVKITPRO))
+    else
+      DEVKITPRO := $(patsubst /$(firstword $(subst /, ,$(DEVKITPRO)))/%,$(firstword $(subst /, ,$(DEVKITPRO))):/%,$(DEVKITPRO))
+      $(info DEVKITPRO corrected to $(DEVKITPRO))
+    endif
   else
     $(info DEVKITPRO is $(DEVKITPRO))
   endif
   PORTLIBS := $(DEVKITPRO)/portlibs/ppc
   ifeq ($(DEVKITPPC),$(subst :, ,$(DEVKITPPC)))
-    DEVKITPPC := $(patsubst /$(firstword $(subst /, ,$(DEVKITPPC)))/%,$(firstword $(subst /, ,$(DEVKITPPC))):/%,$(DEVKITPPC))
-    $(info DEVKITPPC corrected to $(DEVKITPPC))
+    ifneq ($(filter /opt/% /usr/% /home/% /tmp/%,$(DEVKITPPC)),)
+      $(info DEVKITPPC is $(DEVKITPPC))
+    else
+      DEVKITPPC := $(patsubst /$(firstword $(subst /, ,$(DEVKITPPC)))/%,$(firstword $(subst /, ,$(DEVKITPPC))):/%,$(DEVKITPPC))
+      $(info DEVKITPPC corrected to $(DEVKITPPC))
+    endif
   else
     $(info DEVKITPPC is $(DEVKITPPC))
   endif
