@@ -106,7 +106,22 @@ async def read_hello(
 ) -> Hello | None:
     peer = peer_name(writer)
     try:
-        header = await asyncio.wait_for(reader.readexactly(HEADER_SIZE), timeout=15)
+        header = b""
+        while len(header) < HEADER_SIZE:
+            chunk = await asyncio.wait_for(
+                reader.read(HEADER_SIZE - len(header)),
+                timeout=15,
+            )
+            if not chunk:
+                logger.warning(
+                    "rejected %s: disconnected during hello after %d bytes preview=%s",
+                    peer,
+                    len(header),
+                    bytes_preview(header, HEADER_SIZE),
+                )
+                return None
+            header += chunk
+
         magic = header[:4]
         if magic not in (MAGIC_RELAY, MAGIC_DEBUG):
             logger.warning("rejected %s: bad magic %r", peer, header[:4])
@@ -139,7 +154,13 @@ async def read_hello(
         )
         return Hello(magic, role, peer, secret_len)
     except asyncio.TimeoutError:
-        logger.warning("rejected %s: timed out during hello", peer)
+        partial = locals().get("header", b"")
+        logger.warning(
+            "rejected %s: timed out during hello after %d bytes preview=%s",
+            peer,
+            len(partial),
+            bytes_preview(partial, HEADER_SIZE),
+        )
         return None
     except asyncio.IncompleteReadError as exc:
         logger.warning(

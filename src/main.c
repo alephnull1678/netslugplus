@@ -29,6 +29,7 @@
 #endif
 
 #include <fat.h>
+#include <errno.h>
 #include <malloc.h>
 #include <ogc/consol.h>
 #include <ogc/lwp.h>
@@ -38,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <wiiuse/wpad.h>
 
 #include "apploader/apploader.h"
@@ -59,6 +61,8 @@ static int Relay_Connect(int is_host);
 static int Relay_DebugConnect(int is_host);
 static void Relay_DebugLog(const char *message);
 static void Relay_DebugLogState(const char *event, int is_host, int game_socket);
+static int network_is_retryable(int ret);
+static int network_connect_socket(int socket, struct sockaddr_in *address);
 static int reliable_send(int socket, const void *data, int size);
 static int reliable_recv(int socket, void *data, int size);
 
@@ -72,6 +76,10 @@ int relay_port = 10000;
 #define RELAY_HELLO_SIZE 8
 #define RELAY_ROLE_HOST 1
 #define RELAY_ROLE_GUEST 2
+#define RELAY_RETRY_DELAY_US 10000
+#define RELAY_CONNECT_RETRIES 3000
+#define RELAY_SEND_RETRIES 3000
+#define RELAY_RECV_RETRIES 15000
 
 static char relay_secret[RELAY_SECRET_MAX];
 static int relay_secret_len = 0;
@@ -134,6 +142,7 @@ int main(void) {
     /* display the welcome message */
     printf("\x1b[2;0H");
 	printf("Wii NetPlay Test Edition by MrBean35000vr and Chadderz\n");
+	printf("Dolphin relay retry build 2\n");
     printf("Based on BrainSlug Wii  v%x.%02x.%04x"
 #ifndef NDEBUG
         " DEBUG build"
@@ -319,11 +328,18 @@ static void Relay_LoadSecret(void)
 static int reliable_send(int socket, const void *data, int size)
 {
 	int i;
+	int retries = 0;
 	for (i = 0; i < size; )
 	{
 		int amt = Mynet_send(socket, (const char *)data + i, size - i, 0);
+		if (amt < 0 && network_is_retryable(amt) && retries++ < RELAY_SEND_RETRIES)
+		{
+			usleep(RELAY_RETRY_DELAY_US);
+			continue;
+		}
 		if (amt <= 0) return amt;
 		i += amt;
+		retries = 0;
 	}
 	return size;
 }
@@ -331,13 +347,47 @@ static int reliable_send(int socket, const void *data, int size)
 static int reliable_recv(int socket, void *data, int size)
 {
 	int i;
+	int retries = 0;
 	for (i = 0; i < size; )
 	{
 		int amt = Mynet_recv(socket, (char *)data + i, size - i, 0);
+		if (amt < 0 && network_is_retryable(amt) && retries++ < RELAY_RECV_RETRIES)
+		{
+			usleep(RELAY_RETRY_DELAY_US);
+			continue;
+		}
 		if (amt <= 0) return amt;
 		i += amt;
+		retries = 0;
 	}
 	return size;
+}
+
+static int network_is_retryable(int ret)
+{
+	return ret == -EAGAIN || ret == -EWOULDBLOCK ||
+		ret == -EINPROGRESS || ret == -EALREADY;
+}
+
+static int network_connect_socket(int socket, struct sockaddr_in *address)
+{
+	int retries;
+
+	for (retries = 0; retries < RELAY_CONNECT_RETRIES; retries++)
+	{
+		int ret = Mynet_connect(socket, (struct sockaddr*)address, address->sin_len);
+		if (ret == 0 || ret == -EISCONN)
+		{
+			return 0;
+		}
+		if (!network_is_retryable(ret))
+		{
+			return ret;
+		}
+		usleep(RELAY_RETRY_DELAY_US);
+	}
+
+	return -ETIMEDOUT;
 }
 
 static int Relay_Connect(int is_host)
@@ -353,7 +403,7 @@ static int Relay_Connect(int is_host)
 		return -1;
 	}
 
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == -1)
 	{
 		return -1;
@@ -369,14 +419,11 @@ static int Relay_Connect(int is_host)
 		(int)((relay_ip >> 24) & 0xff), (int)((relay_ip >> 16) & 0xff),
 		(int)((relay_ip >> 8) & 0xff), (int)(relay_ip & 0xff), relay_port);
 
-	if (Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len))
+	if (network_connect_socket(sock, &relayAddress))
 	{
 		Mynet_close(sock);
 		return -1;
 	}
-
-	int on = 0;
-	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
 
 	unsigned char hello[RELAY_HELLO_SIZE] = {
 		'N', 'S', 'R', '1',
@@ -412,7 +459,7 @@ static int Relay_DebugConnect(int is_host)
 		return -1;
 	}
 
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (sock == -1)
 	{
 		return -1;
@@ -424,14 +471,11 @@ static int Relay_DebugConnect(int is_host)
 	relayAddress.sin_port = relay_port;
 	relayAddress.sin_addr.s_addr = relay_ip;
 
-	if (Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len))
+	if (network_connect_socket(sock, &relayAddress))
 	{
 		Mynet_close(sock);
 		return -1;
 	}
-
-	int on = 0;
-	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
 
 	unsigned char hello[RELAY_HELLO_SIZE] = {
 		'N', 'S', 'D', '1',
@@ -509,7 +553,7 @@ static void ConnectHOST(void)
 		{
 			goto error;
 		}
-		int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+		int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
 		if (sock == -1)
 		{
@@ -544,8 +588,8 @@ static void ConnectHOST(void)
 			goto error;
 		}
 
-		int on = 0;
-		Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+		int on = 1;
+		Mynet_setsockopt(communicationSock, IPPROTO_TCP, TCP_NODELAY, (char *) &on, sizeof(on));
 	}
 
 	printf("Connected! Sending start request!");
@@ -618,7 +662,7 @@ static void ConnectGUEST(void)
 		{
 			goto error;
 		}
-		sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+		sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 
 		if (sock == -1)
 		{
@@ -633,13 +677,13 @@ static void ConnectGUEST(void)
 
 		printf("Connecting to %d.%d.%d.%d:%d...\n", (int)((host_ip >> 24) & 0xff), (int)((host_ip >> 16) & 0xff), (int)((host_ip >> 8) & 0xff), (int)(host_ip & 0xff), port);
 
-		if(Mynet_connect(sock, (struct sockaddr*)&hostAddress, hostAddress.sin_len))
+		if(network_connect_socket(sock, &hostAddress))
 		{
 			goto error;
 		}
 		
-		int on = 0;
-		Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+		int on = 1;
+		Mynet_setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, (char *) &on, sizeof(on));
 	}
 
 
