@@ -37,6 +37,7 @@
 #include <sdcard/wiisd_io.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wiiuse/wpad.h>
 
 #include "apploader/apploader.h"
@@ -53,9 +54,23 @@ event_t main_event_fat_loaded;
 static void Main_PrintSize(size_t size);
 static void ConnectHOST(void);
 static void ConnectGUEST(void);
+static int ConnectRelay(int role);
 
 int host_ip = 0xc0a80121;
 int port = 10000;
+int relay_enabled = 1;
+int relay_ip = 0x9bf8df22;
+char *relay_secret = "";
+
+#define RELAY_ROLE_HOST 1
+#define RELAY_ROLE_GUEST 2
+#define RELAY_SECRET_SIZE 64
+
+typedef struct relay_hello_t {
+    char magic[4];
+    int role;
+    char secret[RELAY_SECRET_SIZE];
+} relay_hello_t;
 
 int main(void) {
     int ret;
@@ -271,171 +286,153 @@ static void Main_PrintSize(size_t size) {
     printf("%.*f %s", precision, sizef, suffix[magnitude]);
 }
 
+static int ConnectRelay(int role)
+{
+    int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (sock == -1) return -1;
+
+    struct sockaddr_in relayAddress = {};
+    relayAddress.sin_family = AF_INET;
+    relayAddress.sin_len = 8;
+    relayAddress.sin_port = port;
+    relayAddress.sin_addr.s_addr = relay_ip;
+
+    printf("Connecting to relay %d.%d.%d.%d:%d...\n", (int)((relay_ip >> 24) & 0xff), (int)((relay_ip >> 16) & 0xff), (int)((relay_ip >> 8) & 0xff), (int)(relay_ip & 0xff), port);
+    if(Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len)) return -1;
+
+    int on = 0;
+    Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+
+    relay_hello_t hello;
+    memset(&hello, 0, sizeof(hello));
+    memcpy(hello.magic, "NSR1", sizeof(hello.magic));
+    hello.role = role;
+    if (relay_secret) strncpy(hello.secret, relay_secret, sizeof(hello.secret) - 1);
+
+    if(Mynet_send(sock, &hello, sizeof(hello), 0) != sizeof(hello)) return -1;
+
+    printf("Connected to relay.\n");
+    return sock;
+}
+
 static void ConnectHOST(void)
 {
-	if(Mynet_init())
-	{
-		goto error;
-	}
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if(Mynet_init()) goto error;
 
-	if (sock == -1)
-	{
-		goto error;
-	}
+    int communicationSock;
+    if (relay_enabled)
+    {
+        communicationSock = ConnectRelay(RELAY_ROLE_HOST);
+        if (communicationSock == -1) goto error;
+        printf("Waiting for guest through relay...\n");
+    }
+    else
+    {
+        int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+        if (sock == -1) goto error;
 
-	struct sockaddr_in myAddress = {};
-	myAddress.sin_family = AF_INET;
-	myAddress.sin_len = 8;
-	myAddress.sin_port = port;
-	myAddress.sin_addr.s_addr = Mynet_gethostip();
+        struct sockaddr_in myAddress = {};
+        myAddress.sin_family = AF_INET;
+        myAddress.sin_len = 8;
+        myAddress.sin_port = port;
+        myAddress.sin_addr.s_addr = Mynet_gethostip();
 
-	if(Mynet_bind(sock, (struct sockaddr*)&myAddress, myAddress.sin_len))
-	{
-		goto error;
-	}
+        if(Mynet_bind(sock, (struct sockaddr*)&myAddress, myAddress.sin_len)) goto error;
+        if(Mynet_listen(sock, 1)) goto error;
 
-	if(Mynet_listen(sock, 1))
-	{
-		goto error;
-	}
+        printf("Listening on %d.%d.%d.%d:%d...\n", (int)((myAddress.sin_addr.s_addr >> 24) & 0xff), (int)((myAddress.sin_addr.s_addr >> 16) & 0xff), (int)((myAddress.sin_addr.s_addr >> 8) & 0xff), (int)(myAddress.sin_addr.s_addr & 0xff), port);
 
-	printf("Listening on %d.%d.%d.%d:%d...\n", (int)((myAddress.sin_addr.s_addr >> 24) & 0xff), (int)((myAddress.sin_addr.s_addr >> 16) & 0xff), (int)((myAddress.sin_addr.s_addr >> 8) & 0xff), (int)(myAddress.sin_addr.s_addr & 0xff), port);
+        struct sockaddr_in theirAddress = {};
+        int theirAddressLength = 8;
+        communicationSock = Mynet_accept(sock, (struct sockaddr*)&theirAddress, (u32*)&theirAddressLength);
+        if (communicationSock == -1) goto error;
 
-	struct sockaddr_in theirAddress = {};
-	int theirAddressLength = 8;
+        int on = 0;
+        Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+    }
 
-	int communicationSock = Mynet_accept(sock, (struct sockaddr*)&theirAddress, (u32*)&theirAddressLength);
+    printf("Connected! Sending start request!");
+    int letsgo = 1;
+    if(Mynet_send(communicationSock, &letsgo, sizeof(letsgo), 0) != sizeof(letsgo)) goto error;
 
-	if (communicationSock == -1)
-	{
-		goto error;
-	}
-	
-	int on = 0;
-	Mynet_setsockopt(communicationSock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+    printf(" OK!\nWaiting for response...");
+    int whatigot = 0;
+    if(Mynet_recv(communicationSock, &whatigot, sizeof(whatigot), 0) != sizeof(whatigot)) goto error;
 
-	printf("Connected! Sending start request!");
-
-	int letsgo = 1;
-
-	if(Mynet_send(communicationSock, &letsgo, sizeof(letsgo), 0) != sizeof(letsgo))
-	{
-		goto error;
-	}
-
-	printf(" OK!\nWaiting for response...");
-
-	int whatigot = 0;
-
-	if(Mynet_recv(communicationSock, &whatigot, sizeof(whatigot), 0) != sizeof(whatigot))
-	{
-		goto error;
-	}
-
-	printf(" OK!\n");
-
-	if (whatigot == 1)
-	{
-		printf("That was good.\n");
-		int* sockPointer = (int*)Search_SymbolLookup("communicationSock");
-		*sockPointer = communicationSock;
-		int* net_ip_top_fd_pointer = (int*)Search_SymbolLookup("net_ip_top_fd");
-		*net_ip_top_fd_pointer = net_ip_top_fd;
-		int* host_pointer = (int*)Search_SymbolLookup("host");
-		*host_pointer = 1;
-		return;
-	}
-	else
-	{
-		goto error;
-	}
+    printf(" OK!\n");
+    if (whatigot == 1)
+    {
+        printf("That was good.\n");
+        int* sockPointer = (int*)Search_SymbolLookup("communicationSock");
+        *sockPointer = communicationSock;
+        int* net_ip_top_fd_pointer = (int*)Search_SymbolLookup("net_ip_top_fd");
+        *net_ip_top_fd_pointer = net_ip_top_fd;
+        int* host_pointer = (int*)Search_SymbolLookup("host");
+        *host_pointer = 1;
+        return;
+    }
+    goto error;
 
 error:
-	printf("\nWell, that didn't work! Press RESET to get us out of here and try again.\nIf you don't have a RESET button, I feel sorry for you.\n");
-	while (!SYS_ResetButtonDown())
-        VIDEO_WaitVSync();
-    while (SYS_ResetButtonDown())
-        VIDEO_WaitVSync();
-	exit(0);
-	
-	
+    printf("\nWell, that didn't work! Press RESET to get us out of here and try again.\nIf you don't have a RESET button, I feel sorry for you.\n");
+    while (!SYS_ResetButtonDown()) VIDEO_WaitVSync();
+    while (SYS_ResetButtonDown()) VIDEO_WaitVSync();
+    exit(0);
 }
 
 static void ConnectGUEST(void)
 {
-if(Mynet_init())
-	{
-		goto error;
-	}
-	int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if(Mynet_init()) goto error;
 
-	if (sock == -1)
-	{
-		goto error;
-	}
+    int sock;
+    if (relay_enabled)
+    {
+        sock = ConnectRelay(RELAY_ROLE_GUEST);
+        if (sock == -1) goto error;
+    }
+    else
+    {
+        sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+        if (sock == -1) goto error;
 
-	struct sockaddr_in hostAddress = {};
-	hostAddress.sin_family = AF_INET;
-	hostAddress.sin_len = 8;
-	hostAddress.sin_port = port;
-	hostAddress.sin_addr.s_addr = host_ip;
+        struct sockaddr_in hostAddress = {};
+        hostAddress.sin_family = AF_INET;
+        hostAddress.sin_len = 8;
+        hostAddress.sin_port = port;
+        hostAddress.sin_addr.s_addr = host_ip;
 
-	printf("Connecting to %d.%d.%d.%d:%d...\n", (int)((host_ip >> 24) & 0xff), (int)((host_ip >> 16) & 0xff), (int)((host_ip >> 8) & 0xff), (int)(host_ip & 0xff), port);
+        printf("Connecting to %d.%d.%d.%d:%d...\n", (int)((host_ip >> 24) & 0xff), (int)((host_ip >> 16) & 0xff), (int)((host_ip >> 8) & 0xff), (int)(host_ip & 0xff), port);
+        if(Mynet_connect(sock, (struct sockaddr*)&hostAddress, hostAddress.sin_len)) goto error;
 
-	if(Mynet_connect(sock, (struct sockaddr*)&hostAddress, hostAddress.sin_len))
-	{
-		goto error;
-	}
-	
-	int on = 0;
-	Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+        int on = 0;
+        Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+    }
 
+    printf("Connected! Waiting for start request!");
+    int whatigot = 0;
+    if(Mynet_recv(sock, &whatigot, sizeof(whatigot), 0) != sizeof(whatigot)) goto error;
 
+    printf(" OK!\nSending a response...");
+    int letsgo = 1;
+    if(Mynet_send(sock, &letsgo, sizeof(letsgo), 0) != sizeof(letsgo)) goto error;
 
-	printf("Connected! Waiting for start request!");
-
-	int whatigot = 0;
-
-	if(Mynet_recv(sock, &whatigot, sizeof(whatigot), 0) != sizeof(whatigot))
-	{
-		goto error;
-	}
-
-
-
-	printf(" OK!\nSending a response...");
-
-	int letsgo = 1;
-
-	if(Mynet_send(sock, &letsgo, sizeof(letsgo), 0) != sizeof(letsgo))
-	{
-		goto error;
-	}
-
-	printf(" OK!\n");
-
-	if (whatigot == 1)
-	{
-		printf("That was good.\n");
-		int* sockPointer = (int*)Search_SymbolLookup("communicationSock");
-		*sockPointer = sock;
-		int* net_ip_top_fd_pointer = (int*)Search_SymbolLookup("net_ip_top_fd");
-		*net_ip_top_fd_pointer = net_ip_top_fd;
-		int* host_pointer = (int*)Search_SymbolLookup("host");
-		*host_pointer = 0;
-		return;
-	}
-	else
-	{
-		goto error;
-	}
+    printf(" OK!\n");
+    if (whatigot == 1)
+    {
+        printf("That was good.\n");
+        int* sockPointer = (int*)Search_SymbolLookup("communicationSock");
+        *sockPointer = sock;
+        int* net_ip_top_fd_pointer = (int*)Search_SymbolLookup("net_ip_top_fd");
+        *net_ip_top_fd_pointer = net_ip_top_fd;
+        int* host_pointer = (int*)Search_SymbolLookup("host");
+        *host_pointer = 0;
+        return;
+    }
+    goto error;
 
 error:
-	printf("\nWell, that didn't work! Press RESET to get us out of here and try again.\nIf you don't have a RESET button, I feel sorry for you.\n");
-	while (!SYS_ResetButtonDown())
-        VIDEO_WaitVSync();
-    while (SYS_ResetButtonDown())
-        VIDEO_WaitVSync();
-	exit(0);
+    printf("\nWell, that didn't work! Press RESET to get us out of here and try again.\nIf you don't have a RESET button, I feel sorry for you.\n");
+    while (!SYS_ResetButtonDown()) VIDEO_WaitVSync();
+    while (SYS_ResetButtonDown()) VIDEO_WaitVSync();
+    exit(0);
 }

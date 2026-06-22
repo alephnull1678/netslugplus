@@ -151,7 +151,8 @@ release: $(TARGET) meta.xml icon.png
 	$Qcp -r symbols $(RELEASE)/apps/netslug
 	$Qmkdir $(RELEASE)/apps/netslug/modules
 	$Qcp -r USAGE $(RELEASE)/readme.txt
-	$Qcp config.ini $(RELEASE)/apps/netslug/config.ini
+	$Qtest -s secrets/relay_secret.txt || { echo "Missing secrets/relay_secret.txt"; exit 1; }
+	$Qsecret=$$(tr -d '\r\n' < secrets/relay_secret.txt); sed "s/__RELAY_SECRET__/$$secret/g" config.ini > $(RELEASE)/apps/netslug/config.ini
 	$Q$(MAKE) -C modules release RELEASE_DIR=../$(RELEASE)/apps/netslug/modules
 
 ###############################################################################

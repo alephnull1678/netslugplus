@@ -12,3 +12,4 @@ release
 *.filters
 *.user
 *.log
+secrets/relay_secret.txt
