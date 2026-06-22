@@ -1,0 +1,7 @@
+logs
+**/bin
+**/build
+**/release
+**/*.o
+**/*.d
+**/*.log
