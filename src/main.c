@@ -28,6 +28,7 @@
 #undef _WIN32
 #endif
 
+#include <errno.h>
 #include <fat.h>
 #include <malloc.h>
 #include <ogc/consol.h>
@@ -54,7 +55,10 @@ event_t main_event_fat_loaded;
 static void Main_PrintSize(size_t size);
 static void ConnectHOST(void);
 static void ConnectGUEST(void);
-static int ConnectRelay(int role);
+static int RelaySendAll(int sock, const void *data, int size);
+static int RelayRecvAll(int sock, void *data, int size);
+static int RelayRecvAllWait(int sock, void *data, int size, int max_idle_frames);
+static int RelayTryRecvAll(int sock, void *data, int size, int max_idle_frames);
 
 int host_ip = 0xc0a80121;
 int port = 10000;
@@ -286,6 +290,89 @@ static void Main_PrintSize(size_t size) {
     printf("%.*f %s", precision, sizef, suffix[magnitude]);
 }
 
+static int RelaySendAll(int sock, const void *data, int size)
+{
+    int sent = 0;
+    while (sent < size)
+    {
+        int got = Mynet_send(sock, (const char *)data + sent, size - sent, 0);
+        if (got > 0)
+        {
+            sent += got;
+        }
+        else if (got == -EAGAIN)
+        {
+            VIDEO_WaitVSync();
+        }
+        else
+        {
+            printf("Relay send failed: %d\n", got);
+            return -1;
+        }
+    }
+    return sent;
+}
+
+static int RelayRecvAllWait(int sock, void *data, int size, int max_idle_frames)
+{
+    int received = 0;
+    int idle_frames = 0;
+    while (received < size)
+    {
+        int got = Mynet_recv(sock, (char *)data + received, size - received, 0);
+        if (got > 0)
+        {
+            received += got;
+            idle_frames = 0;
+        }
+        else if (got == -EAGAIN || got == 0)
+        {
+            if (max_idle_frames > 0 && ++idle_frames > max_idle_frames)
+            {
+                printf("Relay recv timed out: %d/%d\n", received, size);
+                return -1;
+            }
+            VIDEO_WaitVSync();
+        }
+        else
+        {
+            printf("Relay recv failed: %d\n", got);
+            return -1;
+        }
+    }
+    return received;
+}
+
+static int RelayRecvAll(int sock, void *data, int size)
+{
+    return RelayRecvAllWait(sock, data, size, 0);
+}
+static int RelayTryRecvAll(int sock, void *data, int size, int max_idle_frames)
+{
+    int received = 0;
+    int idle_frames = 0;
+    while (received < size)
+    {
+        int got = Mynet_recv(sock, (char *)data + received, size - received, 0);
+        if (got > 0)
+        {
+            received += got;
+            idle_frames = 0;
+        }
+        else if (got == -EAGAIN || got == 0)
+        {
+            if (++idle_frames > max_idle_frames) return received;
+            VIDEO_WaitVSync();
+        }
+        else
+        {
+            printf("Relay recv failed: %d\n", got);
+            return -1;
+        }
+    }
+    return received;
+}
+
 static int ConnectRelay(int role)
 {
     int sock = Mynet_socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
@@ -298,10 +385,54 @@ static int ConnectRelay(int role)
     relayAddress.sin_addr.s_addr = relay_ip;
 
     printf("Connecting to relay %d.%d.%d.%d:%d...\n", (int)((relay_ip >> 24) & 0xff), (int)((relay_ip >> 16) & 0xff), (int)((relay_ip >> 8) & 0xff), (int)(relay_ip & 0xff), port);
-    if(Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len)) return -1;
+
+    int connectRet = 0;
+    int connected = 0;
+    for (int i = 0; i < 120; i++)
+    {
+        connectRet = Mynet_connect(sock, (struct sockaddr*)&relayAddress, relayAddress.sin_len);
+        if (connectRet == 0 || connectRet == -EISCONN)
+        {
+            connected = 1;
+            break;
+        }
+        if (connectRet != -EAGAIN && connectRet != -EALREADY && connectRet != -EINPROGRESS)
+        {
+            printf("Relay connect failed: %d\n", connectRet);
+            return -1;
+        }
+        VIDEO_WaitVSync();
+    }
+
+    if (!connected)
+    {
+        printf("Relay connect timed out: %d\n", connectRet);
+        return -1;
+    }
 
     int on = 0;
     Mynet_setsockopt(sock, 0, TCP_NODELAY, (char *) &on, sizeof(on));
+
+    for (int i = 0; i < 60; i++)
+    {
+        VIDEO_WaitVSync();
+    }
+
+    char greeting[4];
+    int greeting_size = RelayTryRecvAll(sock, greeting, sizeof(greeting), 120);
+    if (greeting_size < 0) return -1;
+    if (greeting_size == sizeof(greeting))
+    {
+        if (memcmp(greeting, "NSRQ", sizeof(greeting)))
+        {
+            printf("Relay sent bad greeting.\n");
+            return -1;
+        }
+    }
+    else
+    {
+        printf("No relay greeting; using old relay mode.\n");
+    }
 
     relay_hello_t hello;
     memset(&hello, 0, sizeof(hello));
@@ -309,26 +440,18 @@ static int ConnectRelay(int role)
     hello.role = role;
     if (relay_secret) strncpy(hello.secret, relay_secret, sizeof(hello.secret) - 1);
 
-    if(Mynet_send(sock, &hello, sizeof(hello), 0) != sizeof(hello)) return -1;
+    if(RelaySendAll(sock, &hello, sizeof(hello)) != sizeof(hello)) return -1;
 
     printf("Connected to relay. Waiting for peer...\n");
 
     char ack[4];
-    int received = 0;
-    while (received < sizeof(ack))
-    {
-        int got = Mynet_recv(sock, ack + received, sizeof(ack) - received, 0);
-        if (got > 0)
-        {
-            received += got;
-        }
-        else
-        {
-            VIDEO_WaitVSync();
-        }
-    }
+    if(RelayRecvAll(sock, ack, sizeof(ack)) != sizeof(ack)) return -1;
 
-    if (memcmp(ack, "NSOK", sizeof(ack))) return -1;
+    if (memcmp(ack, "NSOK", sizeof(ack)))
+    {
+        printf("Relay sent bad ack.\n");
+        return -1;
+    }
 
     printf("Relay peer ready.\n");
     return sock;
@@ -455,3 +578,4 @@ error:
     while (SYS_ResetButtonDown()) VIDEO_WaitVSync();
     exit(0);
 }
+

@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 MAGIC = b"NSR1"
+RELAY_GREETING = b"NSRQ"
 PAIR_READY = b"NSOK"
 HELLO_SIZE = 72
 HELLO_TIMEOUT = float(os.environ.get("RELAY_HELLO_TIMEOUT", "10"))
@@ -190,6 +191,9 @@ async def handle_client(reader, writer):
     peer = writer.get_extra_info("peername")
     sockname = writer.get_extra_info("sockname")
     logging.info("conn=%s accepted peer=%s local=%s pending=%s", conn_id, peer, sockname, pending_summary())
+    writer.write(RELAY_GREETING)
+    await writer.drain()
+    logging.info("conn=%s peer=%s sent relay greeting=%r", conn_id, peer, RELAY_GREETING)
 
     paired = False
     try:
