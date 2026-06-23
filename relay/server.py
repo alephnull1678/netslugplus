@@ -7,6 +7,7 @@ import struct
 from pathlib import Path
 
 MAGIC = b"NSR1"
+PAIR_READY = b"NSOK"
 HELLO_SIZE = 72
 ROLE_HOST = 1
 ROLE_GUEST = 2
@@ -63,6 +64,9 @@ async def relay_pair(host_reader, host_writer, guest_reader, guest_writer):
     host_peer = host_writer.get_extra_info("peername")
     guest_peer = guest_writer.get_extra_info("peername")
     logging.info("paired host=%s guest=%s", host_peer, guest_peer)
+    host_writer.write(PAIR_READY)
+    guest_writer.write(PAIR_READY)
+    await asyncio.gather(host_writer.drain(), guest_writer.drain())
     await asyncio.gather(
         pipe(host_reader, guest_writer),
         pipe(guest_reader, host_writer),
@@ -100,7 +104,7 @@ async def handle_client(reader, writer):
                 old[1].close()
             entry[role] = (reader, writer)
     except Exception as exc:
-        logging.warning("closed %s: %s", peer, exc)
+        logging.warning("closed %s: %r", peer, exc)
         writer.close()
         try:
             await writer.wait_closed()

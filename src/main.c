@@ -311,7 +311,26 @@ static int ConnectRelay(int role)
 
     if(Mynet_send(sock, &hello, sizeof(hello), 0) != sizeof(hello)) return -1;
 
-    printf("Connected to relay.\n");
+    printf("Connected to relay. Waiting for peer...\n");
+
+    char ack[4];
+    int received = 0;
+    while (received < sizeof(ack))
+    {
+        int got = Mynet_recv(sock, ack + received, sizeof(ack) - received, 0);
+        if (got > 0)
+        {
+            received += got;
+        }
+        else
+        {
+            VIDEO_WaitVSync();
+        }
+    }
+
+    if (memcmp(ack, "NSOK", sizeof(ack))) return -1;
+
+    printf("Relay peer ready.\n");
     return sock;
 }
 
