@@ -517,17 +517,13 @@ s32 Mynet_send(s32 s, const void *data, s32 size, u32 flags)
 s32 Mynet_sendto(s32 s, const void *data, s32 len, u32 flags, struct sockaddr *to, socklen_t tolen)
 {
 	s32 ret;
-	u8 * message_buf = NULL;
 	STACK_ALIGN(struct sendto_params,params,1,32);
+	STACK_ALIGN(ioctlv, parms, 2, 32);
 
 	if (net_ip_top_fd < 0) return -ENXIO;
 	if (tolen > 28) return -EOVERFLOW;
 
-	message_buf = iosAlloc(__net_hid, len);
-	if (message_buf == NULL) {
-		debug_printf("Mynet_send: failed to alloc %d bytes\n", len);
-		return IPC_ENOMEM;
-	}
+	STACK_ALIGN(u8, message_buf, len, 32);
 
 	debug_printf("Mynet_sendto(%d, %p, %d, %d, %p, %d)\n", s, data, len, flags, to, tolen);
 
@@ -548,13 +544,16 @@ s32 Mynet_sendto(s32 s, const void *data, s32 len, u32 flags, struct sockaddr *t
 		params->has_destaddr = 0;
 	}
 
-	ret = _net_convert_error(IOS_IoctlvFormat(__net_hid, net_ip_top_fd, IOCTLV_SO_SENDTO, "dd:", message_buf, len, params, sizeof(struct sendto_params)));
+	parms[0].data = message_buf;
+	parms[0].len = len;
+	parms[1].data = params;
+	parms[1].len = sizeof(struct sendto_params);
+
+	ret = _net_convert_error(IOS_Ioctlv(net_ip_top_fd, IOCTLV_SO_SENDTO, 2, 0, parms));
 	debug_printf("Mynet_send retuned %d\n", ret);
 
-	if(message_buf!=NULL) iosFree(__net_hid,message_buf);
 	return ret;
 }
-
 s32 Mynet_recv(s32 s, void *mem, s32 len, u32 flags)
 {
     return Mynet_recvfrom(s, mem, len, flags, NULL, NULL);	
